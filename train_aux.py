@@ -98,7 +98,24 @@ def train(hyp, opt, device, tb_writer=None):
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
     train_path = data_dict['train']
-    test_path = data_dict['val']
+
+    # Support both single validation set (string) and multiple validation sets (list)
+    val_config = data_dict['val']
+    if isinstance(val_config, str):
+        val_configs = [{'path': val_config, 'name': 'val'}]
+    elif isinstance(val_config, list):
+        # Check if it's a list of strings or list of dicts
+        if all(isinstance(v, str) for v in val_config):
+            val_configs = [{'path': v, 'name': f'val_{i}'} for i, v in enumerate(val_config)]
+        elif all(isinstance(v, dict) for v in val_config):
+            # List of dicts with 'path' and optional 'name' keys
+            val_configs = [{'path': v.get('path', v), 'name': v.get('name', f'val_{i}')} for i, v in enumerate(val_config)]
+        else:
+            raise ValueError(f"Invalid val config: mixed types in list")
+    else:
+        raise ValueError(f"Invalid val config type: {type(val_config)}")
+
+    logger.info(f"Validation sets: {[cfg['name'] for cfg in val_configs]}")
 
     # Freeze
     freeze = []  # parameter names to freeze (full or partial)
@@ -261,17 +278,23 @@ def train(hyp, opt, device, tb_writer=None):
 
     # Process 0
     if rank in [-1, 0]:
-        if hasattr(create_dataloader, '__code__') and 'close_mosaic' in create_dataloader.__code__.co_varnames:
-                    testloader = create_dataloader(test_path, imgsz_test, batch_size * 2, gs, opt,
-                                                hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
-                                                world_size=opt.world_size, workers=opt.workers,
-                                                pad=0.5, prefix=colorstr('val: '),
-                                                close_mosaic=False)[0]  # 검증에서는 항상 False
-        else:
-            testloader = create_dataloader(test_path, imgsz_test, batch_size * 2, gs, opt,
-                                        hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
-                                        world_size=opt.world_size, workers=opt.workers,
-                                        pad=0.5, prefix=colorstr('val: '))[0]
+        # Create dataloaders for all validation sets
+        testloaders = []
+        for val_cfg in val_configs:
+            val_path = val_cfg['path']
+            val_name = val_cfg['name']
+            if hasattr(create_dataloader, '__code__') and 'close_mosaic' in create_dataloader.__code__.co_varnames:
+                testloader = create_dataloader(val_path, imgsz_test, batch_size * 2, gs, opt,
+                                            hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
+                                            world_size=opt.world_size, workers=opt.workers,
+                                            pad=0.5, prefix=colorstr(f'{val_name}: '),
+                                            close_mosaic=False)[0]  # 검증에서는 항상 False
+            else:
+                testloader = create_dataloader(val_path, imgsz_test, batch_size * 2, gs, opt,
+                                            hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
+                                            world_size=opt.world_size, workers=opt.workers,
+                                            pad=0.5, prefix=colorstr(f'{val_name}: '))[0]
+            testloaders.append((val_name, testloader))
 
         if not opt.resume:
             labels = np.concatenate(dataset.labels, 0)
@@ -441,23 +464,61 @@ def train(hyp, opt, device, tb_writer=None):
             final_epoch = epoch + 1 == epochs
             if not opt.notest or final_epoch:  # Calculate mAP
                 wandb_logger.current_epoch = epoch + 1
-                results, maps, times = test.test(data_dict,
-                                                 batch_size=batch_size * 2,
-                                                 imgsz=imgsz_test,
-                                                 model=ema.ema,
-                                                 single_cls=opt.single_cls,
-                                                 dataloader=testloader,
-                                                 save_dir=save_dir,
-                                                 verbose=True,
-                                                 plots=plots and final_epoch,
-                                                 wandb_logger=wandb_logger,
-                                                 compute_loss=compute_loss,
-                                                 is_coco=is_coco,
-                                                 v5_metric=opt.v5_metric)
 
-            # Write
+                # Evaluate on all validation sets
+                all_val_results = []
+                for val_name, testloader in testloaders:
+                    logger.info(f'\n{"="*60}\nEvaluating on {val_name}\n{"="*60}')
+                    results, maps, times, per_class = test.test(data_dict,
+                                                     batch_size=batch_size * 2,
+                                                     imgsz=imgsz_test,
+                                                     model=ema.ema,
+                                                     single_cls=opt.single_cls,
+                                                     dataloader=testloader,
+                                                     save_dir=save_dir,
+                                                     verbose=True,  # Always verbose for class-wise results
+                                                     plots=plots and final_epoch,
+                                                     wandb_logger=wandb_logger,
+                                                     compute_loss=compute_loss,
+                                                     is_coco=is_coco,
+                                                     v5_metric=opt.v5_metric)
+                    all_val_results.append({
+                        'name': val_name,
+                        'results': results,
+                        'maps': maps,
+                        'times': times,
+                        'per_class': per_class
+                    })
+
+                # Use first validation set's results for backward compatibility (fitness calculation)
+                results = all_val_results[0]['results']
+                maps = all_val_results[0]['maps']
+
+            # Write results to file
             with open(results_file, 'a') as f:
-                f.write(s + '%10.4g' * 7 % results + '\n')  # append metrics, val_loss
+                # Write epoch and training loss
+                f.write(s)
+
+                # Write results for each validation set
+                for val_result in all_val_results:
+                    val_name = val_result['name']
+                    val_res = val_result['results']
+                    per_class = val_result['per_class']
+
+                    # Write overall metrics for this validation set
+                    f.write(f"  [{val_name}] " + '%10.4g' * 7 % val_res + '\n')
+
+                    # Write per-class results if available
+                    if per_class is not None:
+                        names = per_class['names']
+                        for i, c in enumerate(per_class['ap_class']):
+                            class_name = names[c]
+                            p_i = per_class['p'][i]
+                            r_i = per_class['r'][i]
+                            ap50_i = per_class['ap50'][i]
+                            ap_i = per_class['ap'][i]
+                            nt_i = per_class['nt'][c]
+                            f.write(f"    [{val_name}][{class_name}] Images: {nt_i:>5}, P: {p_i:>8.3g}, R: {r_i:>8.3g}, mAP@.5: {ap50_i:>8.3g}, mAP@.5:.95: {ap_i:>8.3g}\n")
             if len(opt.name) and opt.bucket:
                 os.system('gsutil cp %s gs://%s/results/results%s.txt' % (results_file, opt.bucket, opt.name))
 

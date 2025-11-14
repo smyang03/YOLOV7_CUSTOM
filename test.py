@@ -284,7 +284,21 @@ def test(data,
     maps = np.zeros(nc) + map
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
-    return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
+
+    # Prepare per-class results for verbose output
+    per_class_results = None
+    if len(stats) and stats[0].any():
+        per_class_results = {
+            'ap_class': ap_class,
+            'p': p,
+            'r': r,
+            'ap50': ap50,
+            'ap': ap,
+            'nt': nt,
+            'names': names
+        }
+
+    return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t, per_class_results
 
 
 if __name__ == '__main__':
