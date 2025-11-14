@@ -493,31 +493,31 @@ def train(hyp, opt, device, tb_writer=None):
                 results = all_val_results[0]['results']
                 maps = all_val_results[0]['maps']
 
-            # Write results to file
-            with open(results_file, 'a') as f:
-                # Write epoch and training loss
-                f.write(s)
+                # Write results to file
+                with open(results_file, 'a') as f:
+                    # Write epoch and training loss
+                    f.write(s)
 
-                # Write results for each validation set
-                for val_result in all_val_results:
-                    val_name = val_result['name']
-                    val_res = val_result['results']
-                    per_class = val_result['per_class']
+                    # Write results for each validation set
+                    for val_result in all_val_results:
+                        val_name = val_result['name']
+                        val_res = val_result['results']
+                        per_class = val_result['per_class']
 
-                    # Write overall metrics for this validation set
-                    f.write(f"  [{val_name}] " + '%10.4g' * 7 % val_res + '\n')
+                        # Write overall metrics for this validation set
+                        f.write(f"  [{val_name}] " + '%10.4g' * 7 % val_res + '\n')
 
-                    # Write per-class results if available
-                    if per_class is not None:
-                        names = per_class['names']
-                        for i, c in enumerate(per_class['ap_class']):
-                            class_name = names[c]
-                            p_i = per_class['p'][i]
-                            r_i = per_class['r'][i]
-                            ap50_i = per_class['ap50'][i]
-                            ap_i = per_class['ap'][i]
-                            nt_i = per_class['nt'][c]
-                            f.write(f"    [{val_name}][{class_name}] Images: {nt_i:>5}, P: {p_i:>8.3g}, R: {r_i:>8.3g}, mAP@.5: {ap50_i:>8.3g}, mAP@.5:.95: {ap_i:>8.3g}\n")
+                        # Write per-class results if available
+                        if per_class is not None:
+                            names = per_class['names']
+                            for i, c in enumerate(per_class['ap_class']):
+                                class_name = names[c]
+                                p_i = per_class['p'][i]
+                                r_i = per_class['r'][i]
+                                ap50_i = per_class['ap50'][i]
+                                ap_i = per_class['ap'][i]
+                                nt_i = per_class['nt'][c]
+                                f.write(f"    [{val_name}][{class_name}] Images: {nt_i:>5}, P: {p_i:>8.3g}, R: {r_i:>8.3g}, mAP@.5: {ap50_i:>8.3g}, mAP@.5:.95: {ap_i:>8.3g}\n")
             if len(opt.name) and opt.bucket:
                 os.system('gsutil cp %s gs://%s/results/results%s.txt' % (results_file, opt.bucket, opt.name))
 

@@ -359,8 +359,8 @@ if __name__ == '__main__':
             y = []  # y axis
             for i in x:  # img-size
                 print(f'\nRunning {f} point {i}...')
-                r, _, t = test(opt.data, w, opt.batch_size, i, opt.conf_thres, opt.iou_thres, opt.save_json,
-                               plots=False, v5_metric=opt.v5_metric)
+                r, _, t, _ = test(opt.data, w, opt.batch_size, i, opt.conf_thres, opt.iou_thres, opt.save_json,
+                                  plots=False, v5_metric=opt.v5_metric)
                 y.append(r + t)  # results and times
             np.savetxt(f, y, fmt='%10.4g')  # save
         os.system('zip -r study.zip study_*.txt')
