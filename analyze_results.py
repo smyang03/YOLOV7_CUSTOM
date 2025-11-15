@@ -192,7 +192,7 @@ def find_best_epoch(results, val_set='test1', class_name='all', metric='fitness'
 
 
 def print_analysis(results, val_set, class_name, metric):
-    """Print analysis results"""
+    """Print analysis results with executive summary and recommendations"""
     best_epoch, best_value, scores = find_best_epoch(results, val_set, class_name, metric)
 
     if best_epoch is None:
@@ -215,51 +215,227 @@ def print_analysis(results, val_set, class_name, metric):
                 print(f"  - {cls}")
         return
 
+    # Get best epoch data
+    best_epoch_data = results[best_epoch]['val_sets']
+    best_data = best_epoch_data[val_set]
+
+    # Extract metrics for the selected class
+    if class_name == 'all':
+        if best_data['overall']:
+            p, r, map50, map_val = best_data['overall'][0:4]
+            selected_fitness = fitness(p, r, map50, map_val)
+        else:
+            p, r, map50, map_val = 0, 0, 0, 0
+            selected_fitness = 0
+    else:
+        if class_name in best_data['per_class']:
+            class_data = best_data['per_class'][class_name]
+            p = class_data['P']
+            r = class_data['R']
+            map50 = class_data['mAP@.5']
+            map_val = class_data['mAP@.5:.95']
+            selected_fitness = fitness(p, r, map50, map_val)
+        else:
+            p, r, map50, map_val = 0, 0, 0, 0
+            selected_fitness = 0
+
+    # Calculate statistics for insights
+    val_scores = {}
+    for epoch, epoch_data in results.items():
+        if val_set not in epoch_data['val_sets']:
+            continue
+        vs_data = epoch_data['val_sets'][val_set]
+        if class_name == 'all':
+            if vs_data['overall']:
+                p_t, r_t, map50_t, map_val_t = vs_data['overall'][0:4]
+                val_scores[epoch] = {
+                    'P': p_t, 'R': r_t, 'mAP@.5': map50_t, 'mAP@.5:.95': map_val_t,
+                    'fitness': fitness(p_t, r_t, map50_t, map_val_t)
+                }
+        else:
+            if class_name in vs_data['per_class']:
+                cls_data = vs_data['per_class'][class_name]
+                val_scores[epoch] = {
+                    'P': cls_data['P'], 'R': cls_data['R'],
+                    'mAP@.5': cls_data['mAP@.5'], 'mAP@.5:.95': cls_data['mAP@.5:.95'],
+                    'fitness': fitness(cls_data['P'], cls_data['R'], cls_data['mAP@.5'], cls_data['mAP@.5:.95'])
+                }
+
+    # Check for overfitting
+    fitness_values = [v['fitness'] for v in val_scores.values()]
+    max_fitness = max(fitness_values)
+    mean_fitness = sum(fitness_values) / len(fitness_values)
+    is_overfit = best_epoch < len(results) * 0.7 and selected_fitness < max_fitness * 0.95
+
+    # ========================================================================
+    # EXECUTIVE SUMMARY
+    # ========================================================================
     print(f"\n{'='*80}")
-    print(f"Analysis Results")
+    print(f"🎯 EXECUTIVE SUMMARY")
+    print(f"{'='*80}")
+    print(f"Analysis: {val_set} / {class_name} / optimize for {metric}")
+    print(f"\n✅ Best Epoch: {best_epoch}")
+    print(f"   {metric}: {best_value:.4f} | fitness: {selected_fitness:.4f}")
+
+    # Recommendation
+    recommendation = "✅ RECOMMENDED"
+    concerns = []
+
+    if is_overfit:
+        recommendation = "⚠️ CAUTION"
+        concerns.append("Possible overfitting detected")
+
+    # Check if early epoch is suspiciously good
+    sorted_epochs = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    if len(sorted_epochs) > 1 and sorted_epochs[1][0] < len(results) * 0.2:
+        concerns.append(f"Epoch {sorted_epochs[1][0]} (early) is 2nd best - verify data quality")
+
+    # Check metric alignment
+    fitness_best = max(val_scores, key=lambda e: val_scores[e]['fitness'])
+    map_best = max(val_scores, key=lambda e: val_scores[e]['mAP@.5:.95'])
+    if fitness_best != map_best:
+        concerns.append(f"Best epoch differs: fitness→{fitness_best}, mAP@.5:.95→{map_best}")
+
+    print(f"\n{recommendation}")
+    if concerns:
+        print(f"\n⚠️ Concerns:")
+        for concern in concerns:
+            print(f"   • {concern}")
+    else:
+        print(f"   ✓ No major concerns detected")
+        print(f"   ✓ Stable training (improvement: {((selected_fitness/mean_fitness - 1) * 100):.1f}% vs mean)")
+
+    print(f"\n{'='*80}")
+    print(f"📊 BASIC INFO")
     print(f"{'='*80}")
     print(f"Results file: {args.results}")
     print(f"Validation set: {val_set}")
     print(f"Class: {class_name}")
     print(f"Metric: {metric}")
-    print(f"\n🏆 Best Epoch: {best_epoch}")
-    print(f"   Best {metric}: {best_value:.6f}")
+    print(f"Total epochs: {len(results)}")
 
-    # Print detailed metrics for best epoch
-    best_data = results[best_epoch]['val_sets'][val_set]
-
+    # Best epoch details
+    print(f"\n🏆 Best Epoch Details (Epoch {best_epoch})")
     if class_name == 'all':
-        if best_data['overall']:
-            p, r, map50, map_val = best_data['overall'][0:4]
-            print(f"\n   Detailed Metrics:")
-            print(f"   - Precision: {p:.6f}")
-            print(f"   - Recall: {r:.6f}")
-            print(f"   - mAP@.5: {map50:.6f}")
-            print(f"   - mAP@.5:.95: {map_val:.6f}")
-            print(f"   - Fitness: {fitness(p, r, map50, map_val):.6f}")
+        print(f"   Overall metrics:")
     else:
-        if class_name in best_data['per_class']:
-            class_data = best_data['per_class'][class_name]
-            print(f"\n   Detailed Metrics:")
-            print(f"   - Precision: {class_data['P']:.6f}")
-            print(f"   - Recall: {class_data['R']:.6f}")
-            print(f"   - mAP@.5: {class_data['mAP@.5']:.6f}")
-            print(f"   - mAP@.5:.95: {class_data['mAP@.5:.95']:.6f}")
-            print(f"   - Images: {class_data['images']}")
-            print(f"   - Fitness: {fitness(class_data['P'], class_data['R'], class_data['mAP@.5'], class_data['mAP@.5:.95']):.6f}")
+        print(f"   Class '{class_name}' metrics:")
+    print(f"   • Precision:    {p:.4f}")
+    print(f"   • Recall:       {r:.4f}")
+    print(f"   • mAP@.5:       {map50:.4f}")
+    print(f"   • mAP@.5:.95:   {map_val:.4f}")
+    print(f"   • Fitness:      {selected_fitness:.4f}")
+    if class_name != 'all' and class_name in best_data['per_class']:
+        print(f"   • Images:       {best_data['per_class'][class_name]['images']}")
 
-    # Print top 5 epochs
-    print(f"\n📊 Top 5 Epochs:")
-    sorted_epochs = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:5]
-    for rank, (epoch, score) in enumerate(sorted_epochs, 1):
-        print(f"   {rank}. Epoch {epoch:3d}: {metric} = {score:.6f}")
+    # Top 5 epochs
+    print(f"\n📈 Top 5 Epochs (by {metric}):")
+    for rank, (epoch, score) in enumerate(sorted_epochs[:5], 1):
+        marker = "🏆" if epoch == best_epoch else "  "
+        print(f"   {marker} {rank}. Epoch {epoch:3d}: {metric}={score:.4f}")
 
-    # Show all validation sets performance at best epoch
+    # ========================================================================
+    # VALIDATION SET COMPARISON
+    # ========================================================================
+    if class_name != 'all' and len(best_epoch_data) > 1:
+        print(f"\n{'='*80}")
+        print(f"📊 VALIDATION SET COMPARISON (Class: {class_name})")
+        print(f"{'='*80}")
+
+        # Collect metrics across validation sets
+        vs_comparison = {}
+        for vs_name in best_epoch_data.keys():
+            vs_data = best_epoch_data[vs_name]
+            if class_name in vs_data['per_class']:
+                cls_data = vs_data['per_class'][class_name]
+                vs_comparison[vs_name] = {
+                    'P': cls_data['P'],
+                    'R': cls_data['R'],
+                    'mAP@.5': cls_data['mAP@.5'],
+                    'mAP@.5:.95': cls_data['mAP@.5:.95'],
+                    'fitness': fitness(cls_data['P'], cls_data['R'], cls_data['mAP@.5'], cls_data['mAP@.5:.95']),
+                    'images': cls_data['images']
+                }
+
+        if len(vs_comparison) > 1:
+            # Find best performing validation set
+            best_vs = max(vs_comparison, key=lambda k: vs_comparison[k]['fitness'])
+
+            print(f"\nPerformance at Epoch {best_epoch}:")
+            print(f"{'Val Set':<15} {'Fitness':>10} {'Precision':>12} {'Recall':>10} {'mAP@.5':<10} {'mAP@.5:.95':>12} {'Images':>8}")
+            print(f"{'-'*85}")
+
+            for vs_name in sorted(vs_comparison.keys()):
+                vs_metrics = vs_comparison[vs_name]
+                marker = "⭐" if vs_name == best_vs else "  "
+                print(f"{marker} {vs_name:<13} {vs_metrics['fitness']:>10.4f} {vs_metrics['P']:>12.4f} "
+                      f"{vs_metrics['R']:>10.4f} {vs_metrics['mAP@.5']:<10.4f} {vs_metrics['mAP@.5:.95']:>12.4f} "
+                      f"{vs_metrics['images']:>8}")
+
+            # Calculate performance differences
+            print(f"\n💡 Key Findings:")
+            if best_vs:
+                best_fitness = vs_comparison[best_vs]['fitness']
+                for vs_name in vs_comparison.keys():
+                    if vs_name != best_vs:
+                        diff = ((vs_comparison[best_vs]['fitness'] / vs_comparison[vs_name]['fitness']) - 1) * 100
+                        if abs(diff) > 5:
+                            print(f"   • {best_vs} outperforms {vs_name} by {diff:.1f}%")
+
+                # Check for large precision/recall gaps
+                p_values = [v['P'] for v in vs_comparison.values()]
+                r_values = [v['R'] for v in vs_comparison.values()]
+                p_diff = max(p_values) - min(p_values)
+                r_diff = max(r_values) - min(r_values)
+
+                if p_diff > 0.15:
+                    print(f"   ⚠️ Large Precision gap ({p_diff:.2f}) across validation sets")
+                if r_diff > 0.15:
+                    print(f"   ⚠️ Large Recall gap ({r_diff:.2f}) across validation sets")
+
+    # ========================================================================
+    # CLASS PERFORMANCE RANKING
+    # ========================================================================
+    if class_name != 'all':
+        # Get all classes in the selected validation set
+        all_classes_fitness = {}
+        for cls in best_data['per_class'].keys():
+            cls_data = best_data['per_class'][cls]
+            all_classes_fitness[cls] = fitness(cls_data['P'], cls_data['R'], cls_data['mAP@.5'], cls_data['mAP@.5:.95'])
+
+        if len(all_classes_fitness) > 1:
+            print(f"\n{'='*80}")
+            print(f"🏆 CLASS PERFORMANCE RANKING (Epoch {best_epoch}, {val_set})")
+            print(f"{'='*80}")
+
+            sorted_classes = sorted(all_classes_fitness.items(), key=lambda x: x[1], reverse=True)
+            selected_class_rank = [i for i, (cls, _) in enumerate(sorted_classes, 1) if cls == class_name][0]
+            best_class = sorted_classes[0][0]
+            best_class_fitness = sorted_classes[0][1]
+
+            print(f"\n{'Rank':<6} {'Class':<20} {'Fitness':>10} {'Bar':>20}")
+            print(f"{'-'*60}")
+
+            for rank, (cls, cls_fitness) in enumerate(sorted_classes, 1):
+                bar_length = int((cls_fitness / best_class_fitness) * 20)
+                bar = "█" * bar_length
+                marker = "👉" if cls == class_name else "  "
+                print(f"{marker} {rank:<4} {cls:<20} {cls_fitness:>10.4f}  {bar}")
+
+            # Performance gap analysis
+            if class_name != best_class:
+                improvement_potential = ((best_class_fitness / selected_fitness) - 1) * 100
+                print(f"\n💡 Your class '{class_name}' ranks #{selected_class_rank}/{len(sorted_classes)}")
+                print(f"   Potential improvement: {improvement_potential:.1f}% (to match best class '{best_class}')")
+            else:
+                print(f"\n🎉 Your class '{class_name}' is the best performing class!")
+
+    # ========================================================================
+    # DETAILED PERFORMANCE
+    # ========================================================================
     print(f"\n{'='*80}")
-    print(f"📈 Best Model Performance (Epoch {best_epoch}) Across All Validation Sets")
+    print(f"📋 DETAILED PERFORMANCE (Epoch {best_epoch}) - All Validation Sets")
     print(f"{'='*80}")
-
-    best_epoch_data = results[best_epoch]['val_sets']
 
     for vs_name in sorted(best_epoch_data.keys()):
         vs_data = best_epoch_data[vs_name]
@@ -268,9 +444,9 @@ def print_analysis(results, val_set, class_name, metric):
 
         # Overall metrics
         if vs_data['overall']:
-            p, r, map50, map_val = vs_data['overall'][0:4]
-            fit = fitness(p, r, map50, map_val)
-            print(f"   Overall: P={p:.4f}, R={r:.4f}, mAP@.5={map50:.4f}, mAP@.5:.95={map_val:.4f}, fitness={fit:.4f}")
+            p_vs, r_vs, map50_vs, map_val_vs = vs_data['overall'][0:4]
+            fit_vs = fitness(p_vs, r_vs, map50_vs, map_val_vs)
+            print(f"   Overall: P={p_vs:.4f}, R={r_vs:.4f}, mAP@.5={map50_vs:.4f}, mAP@.5:.95={map_val_vs:.4f}, fitness={fit_vs:.4f}")
 
         # Per-class metrics
         if vs_data['per_class']:
@@ -278,7 +454,8 @@ def print_analysis(results, val_set, class_name, metric):
             for cls_name in sorted(vs_data['per_class'].keys()):
                 cls_data = vs_data['per_class'][cls_name]
                 cls_fit = fitness(cls_data['P'], cls_data['R'], cls_data['mAP@.5'], cls_data['mAP@.5:.95'])
-                print(f"     • {cls_name:15s}: P={cls_data['P']:.4f}, R={cls_data['R']:.4f}, "
+                marker = "👉" if cls_name == class_name else "  "
+                print(f"   {marker} • {cls_name:15s}: P={cls_data['P']:.4f}, R={cls_data['R']:.4f}, "
                       f"mAP@.5={cls_data['mAP@.5']:.4f}, mAP@.5:.95={cls_data['mAP@.5:.95']:.4f}, "
                       f"fitness={cls_fit:.4f} (images={cls_data['images']})")
 
@@ -334,6 +511,81 @@ def print_analysis(results, val_set, class_name, metric):
                 mean_val = sum(values) / len(values)
                 best_ep = max(val_scores, key=lambda e: val_scores[e][metric_name])
                 print(f"{metric_name:<15} {min_val:>10.4f} {max_val:>10.4f} {mean_val:>10.4f} {best_ep:>12d}")
+
+    # ========================================================================
+    # RECOMMENDATIONS
+    # ========================================================================
+    print(f"\n{'='*80}")
+    print(f"💡 NEXT STEPS & RECOMMENDATIONS")
+    print(f"{'='*80}")
+
+    recommendations = []
+
+    # Recommendation 1: Early epoch warning
+    if len(sorted_epochs) > 1 and sorted_epochs[1][0] < len(results) * 0.2:
+        recommendations.append({
+            'priority': '⚠️ HIGH',
+            'action': f"Verify Epoch {sorted_epochs[1][0]} data quality",
+            'reason': f"Early epoch ({sorted_epochs[1][0]}) is 2nd best - unusual pattern",
+            'command': f"# Check epoch {sorted_epochs[1][0]} metrics:\npython analyze_results.py --results {args.results} --val-set {val_set} --class {class_name} --metric fitness"
+        })
+
+    # Recommendation 2: Validation set performance gap
+    if class_name != 'all' and len(best_epoch_data) > 1:
+        vs_fitness_vals = {}
+        for vs_name in best_epoch_data.keys():
+            vs_data = best_epoch_data[vs_name]
+            if class_name in vs_data['per_class']:
+                cls_data = vs_data['per_class'][class_name]
+                vs_fitness_vals[vs_name] = fitness(cls_data['P'], cls_data['R'], cls_data['mAP@.5'], cls_data['mAP@.5:.95'])
+
+        if len(vs_fitness_vals) > 1:
+            best_vs_name = max(vs_fitness_vals, key=vs_fitness_vals.get)
+            worst_vs_name = min(vs_fitness_vals, key=vs_fitness_vals.get)
+            performance_gap = ((vs_fitness_vals[best_vs_name] / vs_fitness_vals[worst_vs_name]) - 1) * 100
+
+            if performance_gap > 10 and val_set != best_vs_name:
+                recommendations.append({
+                    'priority': '📊 MEDIUM',
+                    'action': f"Re-analyze with --val-set {best_vs_name}",
+                    'reason': f"{best_vs_name} shows {performance_gap:.1f}% better performance",
+                    'command': f"python analyze_results.py --results {args.results} --val-set {best_vs_name} --class {class_name} --metric {metric}"
+                })
+
+    # Recommendation 3: Class improvement potential
+    if class_name != 'all' and len(all_classes_fitness) > 1:
+        best_class_perf = max(all_classes_fitness.values())
+        if selected_fitness < best_class_perf * 0.8:  # More than 20% gap
+            improvement_pct = ((best_class_perf / selected_fitness) - 1) * 100
+            recommendations.append({
+                'priority': '💪 LOW',
+                'action': f"Analyze best performing class '{best_class}'",
+                'reason': f"'{class_name}' has {improvement_pct:.1f}% improvement potential",
+                'command': f"python analyze_results.py --results {args.results} --val-set {val_set} --class {best_class} --metric fitness"
+            })
+
+    # Recommendation 4: Production deployment
+    if not recommendations or len(recommendations) == 0:
+        recommendations.append({
+            'priority': '✅ READY',
+            'action': f"Use Epoch {best_epoch} for deployment",
+            'reason': "No significant concerns detected",
+            'command': f"# Use weights: runs/train/exp/weights/epoch_{best_epoch}.pt"
+        })
+    else:
+        recommendations.append({
+            'priority': '✅ READY',
+            'action': f"Epoch {best_epoch} can be used",
+            'reason': f"Address concerns above if critical for your use case",
+            'command': f"# Weights: runs/train/exp/weights/epoch_{best_epoch}.pt"
+        })
+
+    # Print recommendations
+    for i, rec in enumerate(recommendations, 1):
+        print(f"\n{i}. [{rec['priority']}] {rec['action']}")
+        print(f"   Why: {rec['reason']}")
+        if 'command' in rec:
+            print(f"   How: {rec['command']}")
 
     print(f"\n{'='*80}\n")
 
