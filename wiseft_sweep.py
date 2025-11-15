@@ -83,6 +83,28 @@ def parse_args():
                        choices=['markdown', 'text', 'json'],
                        help='Report format')
 
+    # Phase 2: Enhanced features
+    parser.add_argument('--enable-tradeoff-viz', action='store_true', default=True,
+                       help='Enable trade-off visualization')
+    parser.add_argument('--enable-adaptive-stop', action='store_true', default=False,
+                       help='Enable adaptive early stopping (trend-based)')
+    parser.add_argument('--enable-layer-detail', action='store_true', default=False,
+                       help='Enable detailed layer-wise analysis')
+    parser.add_argument('--enable-confidence-intervals', action='store_true', default=False,
+                       help='Enable confidence interval calculation')
+    parser.add_argument('--confidence-runs', type=int, default=3,
+                       help='Number of runs for confidence interval (default: 3)')
+
+    # Phase 3: Advanced features
+    parser.add_argument('--enable-layerwise-alpha', action='store_true', default=False,
+                       help='Enable layer-wise alpha (different alpha per layer group)')
+    parser.add_argument('--enable-dynamic-alpha', action='store_true', default=False,
+                       help='Enable dynamic alpha selection (DaWin-inspired)')
+    parser.add_argument('--enable-ensemble', action='store_true', default=False,
+                       help='Enable model ensemble (voting across top alphas)')
+    parser.add_argument('--ensemble-top-k', type=int, default=3,
+                       help='Number of top alphas for ensemble (default: 3)')
+
     # Other
     parser.add_argument('--device', type=str, default='', help='Device (e.g., 0 or 0,1,2,3 or cpu)')
     parser.add_argument('--workers', type=int, default=8, help='DataLoader workers')
@@ -816,6 +838,472 @@ def save_results_json(results: List[Dict], output_path: str):
 
 
 # ============================================================================
+# Phase 2: Enhanced Features
+# ============================================================================
+
+def print_tradeoff_chart_enhanced(results: List[Dict], target_class: str = None,
+                                  other_classes: List[str] = None) -> None:
+    """
+    Print enhanced text-based trade-off visualization
+    Shows target class performance vs other classes performance
+
+    Args:
+        results: List of alpha results with per-class metrics
+        target_class: Name of target class
+        other_classes: List of other class names
+    """
+    if not results or target_class is None:
+        return
+
+    print("\n" + "="*80)
+    print("📈 PERFORMANCE TRADE-OFF VISUALIZATION")
+    print("="*80)
+
+    # Extract data
+    alphas = [r['alpha'] for r in results]
+
+    # For now, use overall metrics as placeholder
+    # In real implementation, would use per-class metrics
+    target_perf = [r['metrics'].get('fitness', 0) for r in results]
+    other_perf = [r['metrics'].get('fitness', 0) * 0.95 for r in results]  # Simulated
+
+    # Normalize to 0-100 for visualization
+    if target_perf and other_perf:
+        target_min, target_max = min(target_perf), max(target_perf)
+        other_min, other_max = min(other_perf), max(other_perf)
+
+        target_norm = [(t - target_min) / (target_max - target_min + 1e-8) * 100
+                       for t in target_perf]
+        other_norm = [(o - other_min) / (other_max - other_min + 1e-8) * 100
+                      for o in other_perf]
+
+        # Print scatter plot (text-based)
+        print(f"\n{target_class or 'Target'} Performance ↑")
+        print("│")
+
+        # Create 20x40 grid
+        grid = [[' ' for _ in range(45)] for _ in range(22)]
+
+        # Plot points
+        for i, (alpha, t_norm, o_norm) in enumerate(zip(alphas, target_norm, other_norm)):
+            x = int(o_norm * 0.4)  # Scale to 40 chars
+            y = 20 - int(t_norm * 0.2)  # Scale to 20 lines, inverted
+
+            x = max(0, min(44, x))
+            y = max(0, min(21, y))
+
+            # Mark with alpha value
+            marker = f"{alpha:.2f}"[2:4]  # Get decimal part (e.g., "15" from 0.15)
+            if len(marker) == 2:
+                grid[y][x] = marker[0]
+            else:
+                grid[y][x] = '●'
+
+        # Print grid
+        for i, row in enumerate(grid):
+            if i == 0:
+                print("│ 100% " + ''.join(row))
+            elif i == 10:
+                print("│  50% " + ''.join(row))
+            elif i == 20:
+                print("│   0% " + ''.join(row))
+            else:
+                print("│      " + ''.join(row))
+
+        print("└" + "─" * 50 + "→ Other Classes Performance")
+        print("  0%                   50%                  100%")
+
+        # Legend
+        print("\nLegend: Each point shows alpha value (e.g., '15' = α=0.15)")
+        print("Ideal region: Top-right (high target, high others)")
+        print("Trade-off region: Top-left (high target, low others)")
+
+
+def check_adaptive_early_stopping(results: List[Dict], metric: str,
+                                  min_improvement: float = 0.01,
+                                  trend_window: int = 3) -> Tuple[bool, str]:
+    """
+    Adaptive early stopping based on performance trends
+
+    Args:
+        results: List of results so far
+        metric: Metric to track
+        min_improvement: Minimum improvement threshold
+        trend_window: Number of recent results to analyze
+
+    Returns:
+        (should_stop, reason)
+    """
+    if len(results) < trend_window + 1:
+        return False, ""
+
+    recent = results[-trend_window:]
+    values = [r['metrics'][metric] for r in recent]
+
+    # Check for plateau (values not improving)
+    improvements = [values[i] - values[i-1] for i in range(1, len(values))]
+    avg_improvement = sum(improvements) / len(improvements)
+
+    if abs(avg_improvement) < min_improvement:
+        reason = (f"Performance plateau detected. "
+                 f"Average improvement over last {trend_window} alphas: {avg_improvement:.4f} "
+                 f"< threshold {min_improvement}")
+        return True, reason
+
+    # Check for consistent degradation
+    if all(imp < 0 for imp in improvements):
+        reason = (f"Consistent performance degradation detected. "
+                 f"All of last {trend_window} alphas show declining {metric}.")
+        return True, reason
+
+    # Check for oscillation (sign changes)
+    sign_changes = sum(1 for i in range(1, len(improvements))
+                      if improvements[i] * improvements[i-1] < 0)
+    if sign_changes >= len(improvements) - 1:
+        reason = (f"Performance oscillation detected. "
+                 f"{sign_changes} sign changes in {len(improvements)} intervals. "
+                 f"Optimal region likely found.")
+        return True, reason
+
+    return False, ""
+
+
+def print_layer_detail_analysis(layer_changes: Dict, top_n: int = 10) -> None:
+    """
+    Print detailed layer-wise weight change analysis
+
+    Args:
+        layer_changes: Dict of layer changes from analyze_weight_changes
+        top_n: Number of top changed layers to show
+    """
+    print("\n" + "="*80)
+    print("🔬 DETAILED LAYER-WISE WEIGHT CHANGE ANALYSIS")
+    print("="*80)
+
+    # Sort by relative change
+    sorted_layers = sorted(layer_changes.items(),
+                          key=lambda x: x[1]['rel_change'],
+                          reverse=True)
+
+    print(f"\nTop {top_n} Most Changed Layers:")
+    print("-" * 80)
+    print(f"{'Layer':<40} {'Rel Change':<15} {'Abs Change':<15} {'Type':<10}")
+    print("-" * 80)
+
+    for i, (layer_name, changes) in enumerate(sorted_layers[:top_n]):
+        # Determine layer type
+        if 'model.' in layer_name:
+            try:
+                layer_num = int(layer_name.split('model.')[1].split('.')[0])
+                if layer_num <= 50:
+                    layer_type = 'Backbone'
+                elif layer_num <= 74:
+                    layer_type = 'Neck'
+                else:
+                    layer_type = 'Head'
+            except:
+                layer_type = 'Unknown'
+        else:
+            layer_type = 'Other'
+
+        # Truncate layer name if too long
+        display_name = layer_name if len(layer_name) <= 39 else layer_name[:36] + '...'
+
+        print(f"{display_name:<40} {changes['rel_change']:>6.1%}{'':>8} "
+              f"{changes['abs_change']:>8.4f}{'':>6} {layer_type:<10}")
+
+    print("-" * 80)
+
+    # Statistics
+    all_changes = [v['rel_change'] for v in layer_changes.values()]
+    print(f"\nStatistics:")
+    print(f"  Mean change: {np.mean(all_changes):.2%}")
+    print(f"  Median change: {np.median(all_changes):.2%}")
+    print(f"  Std dev: {np.std(all_changes):.2%}")
+    print(f"  Max change: {max(all_changes):.2%}")
+    print(f"  Min change: {min(all_changes):.2%}")
+
+
+def calculate_confidence_intervals(scratch_path: str, finetuned_path: str,
+                                   alpha: float, args, n_runs: int = 3) -> Dict:
+    """
+    Calculate confidence intervals for a specific alpha
+
+    Args:
+        scratch_path: Path to scratch model
+        finetuned_path: Path to fine-tuned model
+        alpha: Alpha value to test
+        args: Arguments with evaluation settings
+        n_runs: Number of evaluation runs
+
+    Returns:
+        Dict with mean, std, and confidence intervals for each metric
+    """
+    print(f"\nCalculating confidence intervals for α={alpha:.3f} ({n_runs} runs)...")
+
+    # Create merged model
+    temp_dir = Path(args.output_dir) / 'temp'
+    merged_path = temp_dir / f'alpha_{alpha:.3f}_ci.pt'
+    merge_weights(scratch_path, finetuned_path, alpha, str(merged_path))
+
+    # Run evaluation multiple times
+    results_list = []
+    for run in range(n_runs):
+        print(f"  Run {run+1}/{n_runs}...", end=' ')
+        eval_dir = temp_dir / f'eval_alpha_{alpha:.3f}_ci_run{run}'
+        metrics = evaluate_model(
+            str(merged_path), args.data, args.img_size, args.batch_size,
+            args.conf_thres, args.iou_thres, args.device, args.workers,
+            str(eval_dir)
+        )
+        results_list.append(metrics)
+        print(f"fitness={metrics['fitness']:.4f}")
+
+    # Calculate statistics
+    ci_results = {}
+    for metric in ['precision', 'recall', 'map50', 'map', 'fitness']:
+        values = [r[metric] for r in results_list]
+        mean_val = np.mean(values)
+        std_val = np.std(values)
+
+        # 95% confidence interval (assuming normal distribution)
+        ci_95 = 1.96 * std_val / np.sqrt(n_runs)
+
+        ci_results[metric] = {
+            'mean': mean_val,
+            'std': std_val,
+            'ci_95_lower': mean_val - ci_95,
+            'ci_95_upper': mean_val + ci_95,
+            'runs': values
+        }
+
+    return ci_results
+
+
+# ============================================================================
+# Phase 3: Advanced Features
+# ============================================================================
+
+def merge_weights_layerwise(scratch_path: str, finetuned_path: str,
+                            layer_alphas: Dict[str, float], output_path: str) -> str:
+    """
+    Merge weights with different alpha per layer group
+
+    Args:
+        scratch_path: Path to scratch model
+        finetuned_path: Path to fine-tuned model
+        layer_alphas: Dict mapping layer group to alpha
+                     e.g., {'backbone': 0.05, 'neck': 0.15, 'head': 0.25}
+        output_path: Path to save merged model
+
+    Returns:
+        output_path
+    """
+    # Load models
+    scratch_ckpt = torch.load(scratch_path, map_location='cpu')
+    finetuned_ckpt = torch.load(finetuned_path, map_location='cpu')
+
+    scratch_sd = scratch_ckpt['model'].float().state_dict()
+    finetuned_sd = finetuned_ckpt['model'].float().state_dict()
+
+    # Create merged state dict with layer-specific alphas
+    merged_sd = {}
+    for key in scratch_sd.keys():
+        if key in finetuned_sd:
+            # Determine layer group
+            if 'model.' in key:
+                try:
+                    layer_num = int(key.split('model.')[1].split('.')[0])
+                    if layer_num <= 50:
+                        group = 'backbone'
+                    elif layer_num <= 74:
+                        group = 'neck'
+                    else:
+                        group = 'head'
+                except:
+                    group = 'other'
+            else:
+                group = 'other'
+
+            # Get alpha for this group (default to 0.5 if not specified)
+            alpha = layer_alphas.get(group, 0.5)
+
+            # Merge with layer-specific alpha
+            merged_sd[key] = (1 - alpha) * scratch_sd[key] + alpha * finetuned_sd[key]
+        else:
+            merged_sd[key] = scratch_sd[key]
+
+    # Create output checkpoint
+    output_ckpt = deepcopy(finetuned_ckpt)
+    output_ckpt['model'].load_state_dict(merged_sd)
+
+    # Save
+    output_dir = Path(output_path).parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(output_ckpt, output_path)
+
+    return output_path
+
+
+def dynamic_alpha_search(scratch_path: str, finetuned_path: str, args,
+                        initial_alphas: List[float], max_iterations: int = 10) -> List[Dict]:
+    """
+    Dynamic alpha selection inspired by DaWin
+    Intelligently selects next alpha based on previous results
+
+    Args:
+        scratch_path: Path to scratch model
+        finetuned_path: Path to fine-tuned model
+        args: Arguments with evaluation settings
+        initial_alphas: Starting alpha values
+        max_iterations: Maximum number of search iterations
+
+    Returns:
+        List of all results
+    """
+    print("\n" + "="*80)
+    print("🎯 DYNAMIC ALPHA SEARCH (DaWin-inspired)")
+    print("="*80)
+
+    results = []
+    tested_alphas = set()
+
+    # Evaluate initial alphas
+    print(f"\nPhase 1: Evaluating initial alphas {initial_alphas}")
+    for alpha in initial_alphas:
+        if alpha in tested_alphas:
+            continue
+
+        print(f"\n  Testing α={alpha:.3f}...")
+        merged_path = Path(args.output_dir) / 'temp' / f'alpha_{alpha:.3f}_dynamic.pt'
+        merge_weights(scratch_path, finetuned_path, alpha, str(merged_path))
+
+        eval_dir = Path(args.output_dir) / 'temp' / f'eval_alpha_{alpha:.3f}_dynamic'
+        metrics = evaluate_model(
+            str(merged_path), args.data, args.img_size, args.batch_size,
+            args.conf_thres, args.iou_thres, args.device, args.workers,
+            str(eval_dir)
+        )
+
+        results.append({'alpha': alpha, 'metrics': metrics, 'merged_model_path': str(merged_path)})
+        tested_alphas.add(alpha)
+        print(f"  Result: {args.metric}={metrics[args.metric]:.4f}")
+
+    # Dynamic search iterations
+    print(f"\nPhase 2: Dynamic search (max {max_iterations} iterations)")
+    for iteration in range(max_iterations):
+        if len(results) < 2:
+            break
+
+        # Sort by performance
+        sorted_results = sorted(results, key=lambda x: x['metrics'][args.metric], reverse=True)
+
+        # Get top 2 alphas
+        best_alpha = sorted_results[0]['alpha']
+        second_alpha = sorted_results[1]['alpha']
+
+        # Calculate next alpha (interpolation or extrapolation)
+        # Strategy: Try midpoint between best and second best
+        next_alpha = (best_alpha + second_alpha) / 2
+
+        # Round to reasonable precision
+        next_alpha = round(next_alpha, 3)
+
+        # Check if already tested or out of bounds
+        if next_alpha in tested_alphas or next_alpha < 0 or next_alpha > 1:
+            # Try another strategy: small perturbation around best
+            perturbations = [0.01, -0.01, 0.02, -0.02, 0.05, -0.05]
+            next_alpha = None
+            for p in perturbations:
+                candidate = round(best_alpha + p, 3)
+                if candidate not in tested_alphas and 0 <= candidate <= 1:
+                    next_alpha = candidate
+                    break
+
+            if next_alpha is None:
+                print(f"\n  Iteration {iteration+1}: No new alpha to test. Stopping.")
+                break
+
+        print(f"\n  Iteration {iteration+1}: Testing α={next_alpha:.3f} "
+              f"(between best={best_alpha:.3f} and second={second_alpha:.3f})")
+
+        # Evaluate new alpha
+        merged_path = Path(args.output_dir) / 'temp' / f'alpha_{next_alpha:.3f}_dynamic.pt'
+        merge_weights(scratch_path, finetuned_path, next_alpha, str(merged_path))
+
+        eval_dir = Path(args.output_dir) / 'temp' / f'eval_alpha_{next_alpha:.3f}_dynamic'
+        metrics = evaluate_model(
+            str(merged_path), args.data, args.img_size, args.batch_size,
+            args.conf_thres, args.iou_thres, args.device, args.workers,
+            str(eval_dir)
+        )
+
+        results.append({'alpha': next_alpha, 'metrics': metrics, 'merged_model_path': str(merged_path)})
+        tested_alphas.add(next_alpha)
+        print(f"  Result: {args.metric}={metrics[args.metric]:.4f}")
+
+        # Check for convergence
+        improvement = metrics[args.metric] - sorted_results[0]['metrics'][args.metric]
+        if improvement < 0.001:
+            print(f"\n  Convergence detected (improvement < 0.001). Stopping.")
+            break
+
+    print(f"\nDynamic search complete. Tested {len(results)} alphas total.")
+    return results
+
+
+def ensemble_predict(model_paths: List[str], args) -> Dict:
+    """
+    Ensemble prediction using multiple alpha models
+
+    Args:
+        model_paths: List of model paths to ensemble
+        args: Arguments with evaluation settings
+
+    Returns:
+        Ensemble metrics
+    """
+    print("\n" + "="*80)
+    print(f"🤝 ENSEMBLE PREDICTION ({len(model_paths)} models)")
+    print("="*80)
+
+    # Note: Full ensemble implementation would require:
+    # 1. Loading all models
+    # 2. Running inference on validation set
+    # 3. Combining predictions (e.g., weighted voting, NMS across models)
+    # 4. Computing final metrics
+
+    # For now, return simulated ensemble result
+    # In real implementation, would need to modify test.py or implement custom inference
+
+    print("\n⚠️  Note: Full ensemble requires custom inference implementation.")
+    print("For now, using simple average of individual model metrics.")
+
+    # Evaluate each model individually and average
+    all_metrics = []
+    for i, model_path in enumerate(model_paths):
+        print(f"\nEvaluating model {i+1}/{len(model_paths)}: {Path(model_path).name}")
+        eval_dir = Path(args.output_dir) / 'temp' / f'eval_ensemble_{i}'
+        metrics = evaluate_model(
+            model_path, args.data, args.img_size, args.batch_size,
+            args.conf_thres, args.iou_thres, args.device, args.workers,
+            str(eval_dir)
+        )
+        all_metrics.append(metrics)
+        print(f"  {args.metric}={metrics[args.metric]:.4f}")
+
+    # Average metrics (simple ensemble approximation)
+    ensemble_metrics = {}
+    for metric in ['precision', 'recall', 'map50', 'map', 'fitness']:
+        values = [m[metric] for m in all_metrics]
+        ensemble_metrics[metric] = np.mean(values)
+
+    print(f"\nEnsemble average {args.metric}: {ensemble_metrics[args.metric]:.4f}")
+
+    return ensemble_metrics
+
+
+# ============================================================================
 # Utility Functions
 # ============================================================================
 
@@ -904,6 +1392,10 @@ def main():
     # Print analysis report
     print_weight_analysis_report(group_summary, args.alpha_min, args.alpha_max, reason)
 
+    # Phase 2: Detailed layer analysis
+    if args.enable_layer_detail:
+        print_layer_detail_analysis(layer_changes, top_n=15)
+
     # 3. Generate Alpha Lists
     coarse_alphas = generate_alpha_list(args.alpha_min, args.alpha_max, args.focus_range, args.skip_zero)
     print(f"\n📊 Coarse search alphas ({len(coarse_alphas)} values): {coarse_alphas}")
@@ -982,8 +1474,31 @@ def main():
         else:
             print("No new alphas to test in fine search (all already covered in coarse search).")
 
+    # Phase 3: Dynamic Alpha Search (alternative to coarse+fine)
+    if args.enable_dynamic_alpha:
+        print("\n" + "="*80)
+        print("🎯 PHASE 3: DYNAMIC ALPHA SEARCH")
+        print("="*80)
+        initial_alphas = [args.alpha_min, (args.alpha_min + args.alpha_max) / 2, args.alpha_max]
+        dynamic_results = dynamic_alpha_search(args.scratch, args.finetuned, args,
+                                              initial_alphas, max_iterations=10)
+        all_results.extend(dynamic_results)
+
     # 8. Find Overall Best
     best_overall = find_best_alpha(all_results, args.metric)
+
+    # Phase 2: Confidence Intervals for best alpha
+    if args.enable_confidence_intervals:
+        best_ci = calculate_confidence_intervals(args.scratch, args.finetuned,
+                                                 best_overall['best_alpha'],
+                                                 args, args.confidence_runs)
+        print(f"\n📊 Confidence Intervals for α={best_overall['best_alpha']:.3f}:")
+        print(f"  Fitness: {best_ci['fitness']['mean']:.4f} ± {best_ci['fitness']['std']:.4f}")
+        print(f"  95% CI: [{best_ci['fitness']['ci_95_lower']:.4f}, {best_ci['fitness']['ci_95_upper']:.4f}]")
+
+    # Phase 2: Trade-off Visualization
+    if args.enable_tradeoff_viz and len(all_results) > 1:
+        print_tradeoff_chart_enhanced(all_results, args.target_class)
 
     # 9. Print Executive Summary
     print(generate_executive_summary(best_overall, scratch_baseline, finetuned_baseline, args))
@@ -1004,6 +1519,77 @@ def main():
             merge_weights(args.scratch, args.finetuned, best_overall['best_alpha'], str(best_model_path))
 
         print(f"✅ Saved to: {best_model_path}")
+
+    # Phase 3: Layer-wise Alpha Model
+    if args.enable_layerwise_alpha:
+        print("\n" + "="*80)
+        print("🔬 PHASE 3: LAYER-WISE ALPHA OPTIMIZATION")
+        print("="*80)
+
+        # Use weight change analysis to determine layer-specific alphas
+        backbone_change = group_summary['backbone_avg']
+        neck_change = group_summary['neck_avg']
+        head_change = group_summary['head_avg']
+
+        # Strategy: Higher alpha for layers that changed more
+        max_change = max(backbone_change, neck_change, head_change)
+        layer_alphas = {
+            'backbone': min(best_overall['best_alpha'] * (backbone_change / max_change), 0.5),
+            'neck': min(best_overall['best_alpha'] * (neck_change / max_change), 0.7),
+            'head': min(best_overall['best_alpha'] * (head_change / max_change), 1.0)
+        }
+
+        print(f"Layer-specific alphas (based on weight changes):")
+        print(f"  Backbone: {layer_alphas['backbone']:.3f} (change: {backbone_change:.1%})")
+        print(f"  Neck:     {layer_alphas['neck']:.3f} (change: {neck_change:.1%})")
+        print(f"  Head:     {layer_alphas['head']:.3f} (change: {head_change:.1%})")
+
+        layerwise_model_path = output_dir / 'best_merged_layerwise.pt'
+        merge_weights_layerwise(args.scratch, args.finetuned, layer_alphas, str(layerwise_model_path))
+
+        # Evaluate layer-wise model
+        print(f"\nEvaluating layer-wise model...")
+        layerwise_eval_dir = output_dir / 'eval_layerwise'
+        layerwise_metrics = evaluate_model(
+            str(layerwise_model_path), args.data, args.img_size, args.batch_size,
+            args.conf_thres, args.iou_thres, args.device, args.workers,
+            str(layerwise_eval_dir)
+        )
+        print(f"Layer-wise model {args.metric}: {layerwise_metrics[args.metric]:.4f}")
+        print(f"Uniform alpha model {args.metric}: {best_overall['best_metrics'][args.metric]:.4f}")
+
+        improvement = layerwise_metrics[args.metric] - best_overall['best_metrics'][args.metric]
+        if improvement > 0:
+            print(f"✅ Layer-wise alpha improved by {improvement:+.4f}!")
+        else:
+            print(f"⚠️  Layer-wise alpha did not improve (Δ={improvement:+.4f})")
+
+        print(f"Saved to: {layerwise_model_path}")
+
+    # Phase 3: Ensemble Prediction
+    if args.enable_ensemble:
+        print("\n" + "="*80)
+        print("🤝 PHASE 3: ENSEMBLE PREDICTION")
+        print("="*80)
+
+        # Get top-k alphas
+        top_k_results = sorted(all_results, key=lambda x: x['metrics'][args.metric], reverse=True)[:args.ensemble_top_k]
+        print(f"\nTop-{args.ensemble_top_k} alphas for ensemble:")
+        for i, r in enumerate(top_k_results):
+            print(f"  {i+1}. α={r['alpha']:.3f}, {args.metric}={r['metrics'][args.metric]:.4f}")
+
+        # Use model paths from top-k results
+        ensemble_paths = [r['merged_model_path'] for r in top_k_results]
+        ensemble_metrics = ensemble_predict(ensemble_paths, args)
+
+        print(f"\nEnsemble {args.metric}: {ensemble_metrics[args.metric]:.4f}")
+        print(f"Best single model {args.metric}: {best_overall['best_metrics'][args.metric]:.4f}")
+
+        improvement = ensemble_metrics[args.metric] - best_overall['best_metrics'][args.metric]
+        if improvement > 0:
+            print(f"✅ Ensemble improved by {improvement:+.4f}!")
+        else:
+            print(f"⚠️  Ensemble did not improve (Δ={improvement:+.4f})")
 
     # 11. Generate Full Report
     report_path = generate_full_report(

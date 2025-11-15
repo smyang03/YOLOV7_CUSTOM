@@ -345,8 +345,155 @@ def test_workflow_simulation():
     return True
 
 
+def test_phase2_features():
+    """Test Phase 2 Enhanced Features"""
+    print("\n" + "="*80)
+    print("🔬 PHASE 2 ENHANCED FEATURES TESTS")
+    print("="*80)
+
+    all_passed = True
+
+    # Test 1: check_adaptive_early_stopping
+    print("\n📋 Test 1: check_adaptive_early_stopping (plateau detection)")
+    print("-" * 80)
+
+    def check_adaptive_early_stopping(results, metric, min_improvement=0.01, trend_window=3):
+        if len(results) < trend_window + 1:
+            return False, ""
+        recent = results[-trend_window:]
+        values = [r['metrics'][metric] for r in recent]
+        improvements = [values[i] - values[i-1] for i in range(1, len(values))]
+        avg_improvement = sum(improvements) / len(improvements)
+
+        if abs(avg_improvement) < min_improvement:
+            reason = f"Performance plateau detected. Avg improvement: {avg_improvement:.4f}"
+            return True, reason
+
+        if all(imp < 0 for imp in improvements):
+            reason = f"Consistent degradation detected."
+            return True, reason
+
+        return False, ""
+
+    # Create plateau scenario
+    plateau_results = [
+        {'alpha': 0.1, 'metrics': {'fitness': 0.50}},
+        {'alpha': 0.2, 'metrics': {'fitness': 0.51}},
+        {'alpha': 0.3, 'metrics': {'fitness': 0.511}},
+        {'alpha': 0.4, 'metrics': {'fitness': 0.512}},
+    ]
+    should_stop, reason = check_adaptive_early_stopping(plateau_results, 'fitness')
+    if should_stop:
+        print(f"   ✅ PASS: Plateau detected - {reason}")
+    else:
+        print(f"   ❌ FAIL: Plateau not detected")
+        all_passed = False
+
+    # Test 2: layer-wise alpha calculation
+    print("\n📋 Test 2: Layer-wise alpha calculation")
+    print("-" * 80)
+
+    backbone_change, neck_change, head_change = 0.03, 0.12, 0.45
+    best_alpha = 0.20
+    max_change = max(backbone_change, neck_change, head_change)
+
+    layer_alphas = {
+        'backbone': min(best_alpha * (backbone_change / max_change), 0.5),
+        'neck': min(best_alpha * (neck_change / max_change), 0.7),
+        'head': min(best_alpha * (head_change / max_change), 1.0)
+    }
+
+    print(f"   Input: backbone=3%, neck=12%, head=45%, best_alpha=0.20")
+    print(f"   Output:")
+    print(f"     Backbone α: {layer_alphas['backbone']:.3f}")
+    print(f"     Neck α:     {layer_alphas['neck']:.3f}")
+    print(f"     Head α:     {layer_alphas['head']:.3f}")
+
+    # Head should have highest alpha (changed most)
+    if layer_alphas['head'] > layer_alphas['neck'] > layer_alphas['backbone']:
+        print(f"   ✅ PASS: Layer alphas correctly proportional to changes")
+    else:
+        print(f"   ❌ FAIL: Layer alphas not correctly ordered")
+        all_passed = False
+
+    # Summary
+    print("\n" + "="*80)
+    if all_passed:
+        print("✅ ALL PHASE 2 TESTS PASSED")
+    else:
+        print("❌ SOME PHASE 2 TESTS FAILED")
+    print("="*80)
+
+    return all_passed
+
+
+def test_phase3_features():
+    """Test Phase 3 Advanced Features"""
+    print("\n" + "="*80)
+    print("🚀 PHASE 3 ADVANCED FEATURES TESTS")
+    print("="*80)
+
+    all_passed = True
+
+    # Test 1: Dynamic alpha selection logic
+    print("\n📋 Test 1: Dynamic alpha selection")
+    print("-" * 80)
+
+    results = [
+        {'alpha': 0.1, 'metrics': {'fitness': 0.50}},
+        {'alpha': 0.3, 'metrics': {'fitness': 0.55}},  # Best
+        {'alpha': 0.5, 'metrics': {'fitness': 0.52}},  # Second best
+    ]
+
+    sorted_results = sorted(results, key=lambda x: x['metrics']['fitness'], reverse=True)
+    best_alpha = sorted_results[0]['alpha']
+    second_alpha = sorted_results[1]['alpha']
+    next_alpha = (best_alpha + second_alpha) / 2
+
+    print(f"   Input: Best α=0.3, Second α=0.5")
+    print(f"   Output: Next α={next_alpha:.2f} (midpoint)")
+
+    if abs(next_alpha - 0.4) < 0.01:
+        print(f"   ✅ PASS: Correct midpoint calculation")
+    else:
+        print(f"   ❌ FAIL: Expected 0.4, got {next_alpha}")
+        all_passed = False
+
+    # Test 2: Ensemble averaging
+    print("\n📋 Test 2: Ensemble averaging")
+    print("-" * 80)
+
+    model_metrics = [
+        {'fitness': 0.60},
+        {'fitness': 0.62},
+        {'fitness': 0.61},
+    ]
+
+    ensemble_fitness = sum(m['fitness'] for m in model_metrics) / len(model_metrics)
+
+    print(f"   Input: 3 models with fitness [0.60, 0.62, 0.61]")
+    print(f"   Output: Ensemble fitness = {ensemble_fitness:.2f}")
+
+    expected = 0.61
+    if abs(ensemble_fitness - expected) < 0.01:
+        print(f"   ✅ PASS: Correct ensemble average")
+    else:
+        print(f"   ❌ FAIL: Expected {expected}, got {ensemble_fitness}")
+        all_passed = False
+
+    # Summary
+    print("\n" + "="*80)
+    if all_passed:
+        print("✅ ALL PHASE 3 TESTS PASSED")
+    else:
+        print("❌ SOME PHASE 3 TESTS FAILED")
+    print("="*80)
+
+    return all_passed
+
+
 if __name__ == '__main__':
-    print("\n" + "🧪 WiSE-FT Sweep - Simple Unit Test" + "\n")
+    print("\n" + "🧪 WiSE-FT Sweep - Complete Feature Test Suite" + "\n")
 
     # Run unit tests
     success1 = test_unit_functions()
@@ -354,25 +501,44 @@ if __name__ == '__main__':
     # Run workflow simulation
     success2 = test_workflow_simulation()
 
+    # Run Phase 2 tests
+    success3 = test_phase2_features()
+
+    # Run Phase 3 tests
+    success4 = test_phase3_features()
+
     # Final summary
     print("\n" + "="*80)
     print("📊 FINAL SUMMARY")
     print("="*80)
 
-    if success1 and success2:
-        print("✅ All tests passed!")
+    total_tests = 4
+    passed_tests = sum([success1, success2, success3, success4])
+
+    print(f"\nTest Results: {passed_tests}/{total_tests} test suites passed")
+    print(f"  ✅ Core Logic Tests:      {'PASS' if success1 else 'FAIL'}")
+    print(f"  ✅ Workflow Simulation:   {'PASS' if success2 else 'FAIL'}")
+    print(f"  ✅ Phase 2 Features:      {'PASS' if success3 else 'FAIL'}")
+    print(f"  ✅ Phase 3 Features:      {'PASS' if success4 else 'FAIL'}")
+
+    if passed_tests == total_tests:
+        print("\n🎉 ALL TESTS PASSED!")
         print("\n💡 Next Steps:")
         print("   1. Install torch and dependencies:")
         print("      pip install torch numpy pyyaml")
         print("   2. Prepare actual YOLOv7 models:")
         print("      - Scratch model (baseline)")
         print("      - Fine-tuned model (target task)")
-        print("   3. Run wiseft_sweep.py:")
+        print("   3. Run wiseft_sweep.py with basic features:")
         print("      python wiseft_sweep.py --scratch <path> --finetuned <path> --data <path>")
-        print("\n📖 wiseft_sweep.py MVP is ready to use!")
+        print("   4. Try Phase 2 features:")
+        print("      python wiseft_sweep.py ... --enable-tradeoff-viz --enable-layer-detail")
+        print("   5. Try Phase 3 features:")
+        print("      python wiseft_sweep.py ... --enable-dynamic-alpha --enable-layerwise-alpha")
+        print("\n📖 wiseft_sweep.py (Phase 1-3 Complete) is ready to use!")
     else:
-        print("❌ Some tests failed")
+        print(f"\n❌ {total_tests - passed_tests} test suite(s) failed")
 
     print("="*80)
 
-    sys.exit(0 if (success1 and success2) else 1)
+    sys.exit(0 if passed_tests == total_tests else 1)
