@@ -533,9 +533,42 @@ def train(hyp, opt, device, tb_writer=None):
                             total_images = sum(class_images)
                             logger.info(pf % (class_name, '-', total_images, avg_metrics[0], avg_metrics[1], avg_metrics[2], avg_metrics[3]))
 
-                # Use first validation set's results for backward compatibility (fitness calculation)
-                results = all_val_results[0]['results']
-                maps = all_val_results[0]['maps']
+                # Select validation set for best model selection based on --best-val-set option
+                best_val_set = opt.best_val_set
+                if best_val_set == 'first':
+                    results = all_val_results[0]['results']
+                    maps = all_val_results[0]['maps']
+                    logger.info(f'Using {all_val_results[0]["name"]} for best model selection')
+                elif best_val_set == 'last':
+                    results = all_val_results[-1]['results']
+                    maps = all_val_results[-1]['maps']
+                    logger.info(f'Using {all_val_results[-1]["name"]} for best model selection')
+                elif best_val_set == 'Combined' or best_val_set == 'combined':
+                    # Use average of all validation sets
+                    if len(all_val_results) > 1:
+                        results = tuple(np.mean([vr['results'] for vr in all_val_results], axis=0))
+                        # For maps, average across all validation sets
+                        all_maps = np.array([vr['maps'] for vr in all_val_results])
+                        maps = np.mean(all_maps, axis=0)
+                        logger.info('Using Combined (average) results for best model selection')
+                    else:
+                        results = all_val_results[0]['results']
+                        maps = all_val_results[0]['maps']
+                        logger.info(f'Only one validation set available, using {all_val_results[0]["name"]}')
+                else:
+                    # Find specific validation set by name
+                    found = False
+                    for val_result in all_val_results:
+                        if val_result['name'] == best_val_set:
+                            results = val_result['results']
+                            maps = val_result['maps']
+                            logger.info(f'Using {best_val_set} for best model selection')
+                            found = True
+                            break
+                    if not found:
+                        logger.warning(f'Validation set "{best_val_set}" not found. Using first validation set: {all_val_results[0]["name"]}')
+                        results = all_val_results[0]['results']
+                        maps = all_val_results[0]['maps']
 
                 # Write results to file
                 with open(results_file, 'a') as f:
@@ -744,6 +777,8 @@ if __name__ == '__main__':
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
     parser.add_argument('--close-mosaic', type=int, default=0, help='close mosaic augmentation (epochs)')  # close_mosaic 인자 추가
     parser.add_argument('--model-saveoptimizer', action='store_true', help='Save model optimizer state')
+    parser.add_argument('--best-val-set', type=str, default='first',
+                        help='Validation set to use for best model selection (first, last, Combined, test1, test2, etc.)')
 
     opt = parser.parse_args()
 
