@@ -493,6 +493,46 @@ def train(hyp, opt, device, tb_writer=None):
                         'per_class': per_class
                     })
 
+                # Log combined results if multiple validation sets exist
+                if len(all_val_results) > 1:
+                    logger.info(f'\n{"="*60}\nCombined Results (Average)\n{"="*60}')
+
+                    # Calculate average overall metrics
+                    combined_results = np.mean([vr['results'] for vr in all_val_results], axis=0)
+                    pf = '%20s' + '%12s' * 2 + '%12.3g' * 4
+                    logger.info(pf % ('all', '-', '-', combined_results[0], combined_results[1], combined_results[2], combined_results[3]))
+
+                    # Calculate and log average per-class metrics
+                    all_class_names = set()
+                    for val_result in all_val_results:
+                        if val_result['per_class'] is not None:
+                            names = val_result['per_class']['names']
+                            for c in val_result['per_class']['ap_class']:
+                                all_class_names.add(names[c])
+
+                    for class_name in sorted(all_class_names):
+                        class_metrics = []
+                        class_images = []
+                        for val_result in all_val_results:
+                            per_class = val_result['per_class']
+                            if per_class is not None:
+                                names = per_class['names']
+                                for i, c in enumerate(per_class['ap_class']):
+                                    if names[c] == class_name:
+                                        class_metrics.append([
+                                            per_class['p'][i],
+                                            per_class['r'][i],
+                                            per_class['ap50'][i],
+                                            per_class['ap'][i]
+                                        ])
+                                        class_images.append(per_class['nt'][c])
+                                        break
+
+                        if class_metrics:
+                            avg_metrics = np.mean(class_metrics, axis=0)
+                            total_images = sum(class_images)
+                            logger.info(pf % (class_name, '-', total_images, avg_metrics[0], avg_metrics[1], avg_metrics[2], avg_metrics[3]))
+
                 # Use first validation set's results for backward compatibility (fitness calculation)
                 results = all_val_results[0]['results']
                 maps = all_val_results[0]['maps']
@@ -509,7 +549,7 @@ def train(hyp, opt, device, tb_writer=None):
                         per_class = val_result['per_class']
 
                         # Write overall metrics for this validation set
-                        f.write(f"  [{val_name}] " + '%10.4g' * 7 % val_res + '\n')
+                        f.write(f"  [{val_name:>12s}] " + '%11.4g' * 7 % val_res + '\n')
 
                         # Write per-class results if available
                         if per_class is not None:
@@ -521,7 +561,46 @@ def train(hyp, opt, device, tb_writer=None):
                                 ap50_i = per_class['ap50'][i]
                                 ap_i = per_class['ap'][i]
                                 nt_i = per_class['nt'][c]
-                                f.write(f"    [{val_name}][{class_name}] Images: {nt_i:>5}, P: {p_i:>8.3g}, R: {r_i:>8.3g}, mAP@.5: {ap50_i:>8.3g}, mAP@.5:.95: {ap_i:>8.3g}\n")
+                                f.write(f"    [{val_name:>12s}][{class_name:>15s}] Images: {nt_i:>5}, P: {p_i:>10.4g}, R: {r_i:>10.4g}, mAP@.5: {ap50_i:>10.4g}, mAP@.5:.95: {ap_i:>10.4g}\n")
+
+                    # Calculate and write combined (average) results across all validation sets
+                    if len(all_val_results) > 1:
+                        # Average the overall metrics
+                        combined_results = np.mean([vr['results'] for vr in all_val_results], axis=0)
+                        f.write(f"  [{'Combined':>12s}] " + '%11.4g' * 7 % tuple(combined_results) + '\n')
+
+                        # Combine per-class results
+                        # Collect all unique classes across validation sets
+                        all_class_names = set()
+                        for val_result in all_val_results:
+                            if val_result['per_class'] is not None:
+                                names = val_result['per_class']['names']
+                                for c in val_result['per_class']['ap_class']:
+                                    all_class_names.add(names[c])
+
+                        # Calculate average per-class metrics
+                        for class_name in sorted(all_class_names):
+                            class_metrics = []
+                            class_images = []
+                            for val_result in all_val_results:
+                                per_class = val_result['per_class']
+                                if per_class is not None:
+                                    names = per_class['names']
+                                    for i, c in enumerate(per_class['ap_class']):
+                                        if names[c] == class_name:
+                                            class_metrics.append([
+                                                per_class['p'][i],
+                                                per_class['r'][i],
+                                                per_class['ap50'][i],
+                                                per_class['ap'][i]
+                                            ])
+                                            class_images.append(per_class['nt'][c])
+                                            break
+
+                            if class_metrics:
+                                avg_metrics = np.mean(class_metrics, axis=0)
+                                total_images = sum(class_images)
+                                f.write(f"    [{'Combined':>12s}][{class_name:>15s}] Images: {total_images:>5}, P: {avg_metrics[0]:>10.4g}, R: {avg_metrics[1]:>10.4g}, mAP@.5: {avg_metrics[2]:>10.4g}, mAP@.5:.95: {avg_metrics[3]:>10.4g}\n")
             if len(opt.name) and opt.bucket:
                 os.system('gsutil cp %s gs://%s/results/results%s.txt' % (results_file, opt.bucket, opt.name))
 
