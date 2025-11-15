@@ -153,9 +153,9 @@ def check_file(file):
         return files[0]  # return file
 
 
-def check_dataset(dict):
+def check_dataset(data_dict):
     # Download dataset if not found locally
-    val, s = dict.get('val'), dict.get('download')
+    val, s = data_dict.get('val'), data_dict.get('download')
     if val and len(val):
         # Support both single validation set (string) and multiple validation sets (list)
         if isinstance(val, str):
