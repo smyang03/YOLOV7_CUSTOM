@@ -157,9 +157,23 @@ def check_dataset(dict):
     # Download dataset if not found locally
     val, s = dict.get('val'), dict.get('download')
     if val and len(val):
-        val = [Path(x).resolve() for x in (val if isinstance(val, list) else [val])]  # val path
-        if not all(x.exists() for x in val):
-            print('\nWARNING: Dataset not found, nonexistent paths: %s' % [str(x) for x in val if not x.exists()])
+        # Support both single validation set (string) and multiple validation sets (list)
+        if isinstance(val, str):
+            val_paths = [Path(val).resolve()]
+        elif isinstance(val, list):
+            # Check if it's a list of strings or list of dicts
+            if all(isinstance(v, str) for v in val):
+                val_paths = [Path(v).resolve() for v in val]
+            elif all(isinstance(v, dict) for v in val):
+                # Extract 'path' from each dict
+                val_paths = [Path(v.get('path')).resolve() for v in val]
+            else:
+                raise ValueError(f"Invalid val config: mixed types in list")
+        else:
+            raise ValueError(f"Invalid val config type: {type(val)}")
+
+        if not all(x.exists() for x in val_paths):
+            print('\nWARNING: Dataset not found, nonexistent paths: %s' % [str(x) for x in val_paths if not x.exists()])
             if s and len(s):  # download script
                 print('Downloading %s ...' % s)
                 if s.startswith('http') and s.endswith('.zip'):  # URL
