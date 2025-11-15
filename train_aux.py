@@ -117,6 +117,10 @@ def train(hyp, opt, device, tb_writer=None):
 
     logger.info(f"Validation sets: {[cfg['name'] for cfg in val_configs]}")
 
+    # Validate that we have at least one validation set
+    if len(val_configs) == 0:
+        raise ValueError("No validation sets found in data.yaml. Please specify at least one validation set.")
+
     # Freeze
     freeze = []  # parameter names to freeze (full or partial)
     for k, v in model.named_parameters():
