@@ -254,7 +254,88 @@ def print_analysis(results, val_set, class_name, metric):
     for rank, (epoch, score) in enumerate(sorted_epochs, 1):
         print(f"   {rank}. Epoch {epoch:3d}: {metric} = {score:.6f}")
 
-    print(f"{'='*80}\n")
+    # Show all validation sets performance at best epoch
+    print(f"\n{'='*80}")
+    print(f"📈 Best Model Performance (Epoch {best_epoch}) Across All Validation Sets")
+    print(f"{'='*80}")
+
+    best_epoch_data = results[best_epoch]['val_sets']
+
+    for vs_name in sorted(best_epoch_data.keys()):
+        vs_data = best_epoch_data[vs_name]
+
+        print(f"\n🔹 {vs_name}:")
+
+        # Overall metrics
+        if vs_data['overall']:
+            p, r, map50, map_val = vs_data['overall'][0:4]
+            fit = fitness(p, r, map50, map_val)
+            print(f"   Overall: P={p:.4f}, R={r:.4f}, mAP@.5={map50:.4f}, mAP@.5:.95={map_val:.4f}, fitness={fit:.4f}")
+
+        # Per-class metrics
+        if vs_data['per_class']:
+            print(f"   Per-class:")
+            for cls_name in sorted(vs_data['per_class'].keys()):
+                cls_data = vs_data['per_class'][cls_name]
+                cls_fit = fitness(cls_data['P'], cls_data['R'], cls_data['mAP@.5'], cls_data['mAP@.5:.95'])
+                print(f"     • {cls_name:15s}: P={cls_data['P']:.4f}, R={cls_data['R']:.4f}, "
+                      f"mAP@.5={cls_data['mAP@.5']:.4f}, mAP@.5:.95={cls_data['mAP@.5:.95']:.4f}, "
+                      f"fitness={cls_fit:.4f} (images={cls_data['images']})")
+
+    # Show statistics for selected validation set
+    if val_set in best_epoch_data:
+        print(f"\n{'='*80}")
+        print(f"📊 Selected Validation Set Statistics: {val_set}")
+        print(f"{'='*80}")
+
+        # Calculate statistics across all epochs for this val set
+        val_scores = {}
+        for epoch, epoch_data in results.items():
+            if val_set not in epoch_data['val_sets']:
+                continue
+
+            vs_data = epoch_data['val_sets'][val_set]
+
+            if class_name == 'all':
+                if vs_data['overall']:
+                    p, r, map50, map_val = vs_data['overall'][0:4]
+                    val_scores[epoch] = {
+                        'P': p, 'R': r, 'mAP@.5': map50, 'mAP@.5:.95': map_val,
+                        'fitness': fitness(p, r, map50, map_val)
+                    }
+            else:
+                if class_name in vs_data['per_class']:
+                    cls_data = vs_data['per_class'][class_name]
+                    val_scores[epoch] = {
+                        'P': cls_data['P'], 'R': cls_data['R'],
+                        'mAP@.5': cls_data['mAP@.5'], 'mAP@.5:.95': cls_data['mAP@.5:.95'],
+                        'fitness': fitness(cls_data['P'], cls_data['R'], cls_data['mAP@.5'], cls_data['mAP@.5:.95'])
+                    }
+
+        if val_scores:
+            # Calculate statistics
+            metrics_list = {
+                'P': [v['P'] for v in val_scores.values()],
+                'R': [v['R'] for v in val_scores.values()],
+                'mAP@.5': [v['mAP@.5'] for v in val_scores.values()],
+                'mAP@.5:.95': [v['mAP@.5:.95'] for v in val_scores.values()],
+                'fitness': [v['fitness'] for v in val_scores.values()]
+            }
+
+            print(f"\nTotal epochs analyzed: {len(val_scores)}")
+            print(f"Class: {class_name}")
+            print(f"\nMetric Statistics:")
+            print(f"{'Metric':<15} {'Min':>10} {'Max':>10} {'Mean':>10} {'Best Epoch':>12}")
+            print(f"{'-'*60}")
+
+            for metric_name, values in metrics_list.items():
+                min_val = min(values)
+                max_val = max(values)
+                mean_val = sum(values) / len(values)
+                best_ep = max(val_scores, key=lambda e: val_scores[e][metric_name])
+                print(f"{metric_name:<15} {min_val:>10.4f} {max_val:>10.4f} {mean_val:>10.4f} {best_ep:>12d}")
+
+    print(f"\n{'='*80}\n")
 
 
 def plot_metric_curve(results, val_set, class_name, metric):
