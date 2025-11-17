@@ -1,0 +1,139 @@
+# YOLOv7 Dataset Configuration Example
+# WiSE-FT Sweep Tool을 사용할 때 --data 인수로 이 파일을 전달하세요
+
+# 학습/검증/테스트 경로
+train: ./data/coco/train2017.txt  # 학습 이미지 경로 리스트 파일
+val: ./data/coco/val2017.txt      # 검증 이미지 경로 리스트 파일
+test: ./data/coco/test2017.txt    # 테스트 이미지 경로 리스트 파일 (선택사항)
+
+# 클래스 개수
+nc: 80  # number of classes
+
+# 클래스 이름 리스트 (순서대로 0, 1, 2, ...)
+names: ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
+        'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+        'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+        'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
+        'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
+        'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+        'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
+        'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
+        'hair drier', 'toothbrush']
+
+
+# ============================================================================
+# 커스텀 데이터셋 예제 1: 단일 클래스 (사람만)
+# ============================================================================
+# train: ./data/person_only/train.txt
+# val: ./data/person_only/val.txt
+#
+# nc: 1
+#
+# names: ['person']
+
+
+# ============================================================================
+# 커스텀 데이터셋 예제 2: 3개 클래스
+# ============================================================================
+# train: ./data/custom/train.txt
+# val: ./data/custom/val.txt
+# test: ./data/custom/test.txt
+#
+# nc: 3
+#
+# names: ['car', 'truck', 'bus']
+
+
+# ============================================================================
+# 커스텀 데이터셋 예제 3: COCO + 커스텀 사람 데이터
+# ============================================================================
+# train: ./data/coco_person_mixed/train.txt
+# val: ./data/coco_person_mixed/val.txt
+#
+# nc: 80
+#
+# names: ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
+#         'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+#         'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+#         'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
+#         'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
+#         'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+#         'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
+#         'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
+#         'hair drier', 'toothbrush']
+
+
+# ============================================================================
+# 이미지 경로 리스트 파일 (.txt) 형식:
+# ============================================================================
+# train.txt, val.txt, test.txt 파일의 내용은 각 줄에 이미지 경로를 하나씩 적습니다:
+#
+# /path/to/images/image1.jpg
+# /path/to/images/image2.jpg
+# /path/to/images/image3.jpg
+# ...
+#
+# 또는 상대 경로:
+# ./images/train/image1.jpg
+# ./images/train/image2.jpg
+# ...
+
+
+# ============================================================================
+# 라벨 파일 형식 (.txt):
+# ============================================================================
+# 각 이미지에 대응하는 라벨 파일이 있어야 합니다.
+# 이미지: /path/to/images/image1.jpg
+# 라벨:   /path/to/labels/image1.txt
+#
+# 라벨 파일 내용 (각 줄에 하나의 객체):
+# <class_id> <x_center> <y_center> <width> <height>
+#
+# 예제:
+# 0 0.5 0.5 0.3 0.4
+# 2 0.2 0.3 0.1 0.15
+#
+# 설명:
+# - class_id: 클래스 인덱스 (0부터 시작, names 리스트의 인덱스)
+# - x_center, y_center: 바운딩 박스 중심 좌표 (0~1로 정규화)
+# - width, height: 바운딩 박스 너비와 높이 (0~1로 정규화)
+
+
+# ============================================================================
+# WiSE-FT Sweep 사용 예제:
+# ============================================================================
+# python wiseft_sweep.py \
+#     --scratch runs/scratch/weights/best.pt \
+#     --finetuned runs/person_ft/weights/best.pt \
+#     --data data_example.yaml \
+#     --target-class person
+
+
+# ============================================================================
+# 디렉토리 구조 예제:
+# ============================================================================
+# data/
+# ├── data_example.yaml          # 이 파일
+# ├── coco/
+# │   ├── train2017.txt          # 학습 이미지 경로 리스트
+# │   ├── val2017.txt            # 검증 이미지 경로 리스트
+# │   └── test2017.txt           # 테스트 이미지 경로 리스트
+# ├── images/
+# │   ├── train/
+# │   │   ├── image1.jpg
+# │   │   ├── image2.jpg
+# │   │   └── ...
+# │   ├── val/
+# │   │   ├── image1.jpg
+# │   │   └── ...
+# │   └── test/
+# │       └── ...
+# └── labels/
+#     ├── train/
+#     │   ├── image1.txt         # YOLO 형식 라벨 (class x y w h)
+#     │   ├── image2.txt
+#     │   └── ...
+#     ├── val/
+#     │   └── ...
+#     └── test/
+#         └── ...
