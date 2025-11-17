@@ -1,0 +1,187 @@
+# 밤에 돌릴 명령어 모음 (복사해서 바로 실행)
+
+# ============================================================
+# 1. 빠른 테스트 (~1분)
+# ============================================================
+python test_wiseft_simple.py
+
+
+# ============================================================
+# 2. 전체 테스트 (~5-10분)
+# ============================================================
+python test_wiseft_sweep.py
+
+
+# ============================================================
+# 3. 기본 WiSE-FT (모델 있을 때, ~30-60분)
+# ============================================================
+python wiseft_sweep.py \
+    --scratch runs/scratch/weights/best.pt \
+    --finetuned runs/finetuned/weights/best.pt \
+    --data data/custom.yaml
+
+
+# ============================================================
+# 4. 타겟 클래스 지정 (~30-60분)
+# ============================================================
+python wiseft_sweep.py \
+    --scratch runs/scratch/weights/best.pt \
+    --finetuned runs/finetuned/weights/best.pt \
+    --data data/custom.yaml \
+    --target-class person
+
+
+# ============================================================
+# 5. 세밀한 탐색 (~1시간)
+# ============================================================
+python wiseft_sweep.py \
+    --scratch runs/scratch/weights/best.pt \
+    --finetuned runs/finetuned/weights/best.pt \
+    --data data/custom.yaml \
+    --focus-range 0.05
+
+
+# ============================================================
+# 6. 낮은 알파 범위 (과적합 의심 시, ~30분)
+# ============================================================
+python wiseft_sweep.py \
+    --scratch runs/scratch/weights/best.pt \
+    --finetuned runs/finetuned/weights/best.pt \
+    --data data/custom.yaml \
+    --alpha-min 0.0 \
+    --alpha-max 0.3
+
+
+# ============================================================
+# 7. Phase 2 기능 포함 (~1시간)
+# ============================================================
+python wiseft_sweep.py \
+    --scratch runs/scratch/weights/best.pt \
+    --finetuned runs/finetuned/weights/best.pt \
+    --data data/custom.yaml \
+    --target-class person \
+    --enable-tradeoff-viz \
+    --enable-layer-detail \
+    --enable-confidence-intervals
+
+
+# ============================================================
+# 8. 동적 탐색 (빠르고 효율적, ~30-45분)
+# ============================================================
+python wiseft_sweep.py \
+    --scratch runs/scratch/weights/best.pt \
+    --finetuned runs/finetuned/weights/best.pt \
+    --data data/custom.yaml \
+    --enable-dynamic-alpha \
+    --enable-adaptive-stop
+
+
+# ============================================================
+# 9. 레이어별 알파 (~1-2시간)
+# ============================================================
+python wiseft_sweep.py \
+    --scratch runs/scratch/weights/best.pt \
+    --finetuned runs/finetuned/weights/best.pt \
+    --data data/custom.yaml \
+    --enable-layerwise-alpha
+
+
+# ============================================================
+# 10. 앙상블 (~1-2시간)
+# ============================================================
+python wiseft_sweep.py \
+    --scratch runs/scratch/weights/best.pt \
+    --finetuned runs/finetuned/weights/best.pt \
+    --data data/custom.yaml \
+    --enable-ensemble \
+    --ensemble-top-k 5
+
+
+# ============================================================
+# 11. 모든 기능 활성화 (최고 추천, ~2-3시간)
+# ============================================================
+python wiseft_sweep.py \
+    --scratch runs/scratch/weights/best.pt \
+    --finetuned runs/finetuned/weights/best.pt \
+    --data data/custom.yaml \
+    --target-class person \
+    --focus-range 0.05 \
+    --enable-tradeoff-viz \
+    --enable-adaptive-stop \
+    --enable-layer-detail \
+    --enable-confidence-intervals \
+    --confidence-runs 3 \
+    --enable-layerwise-alpha \
+    --enable-dynamic-alpha \
+    --enable-ensemble \
+    --ensemble-top-k 5
+
+
+# ============================================================
+# 12. 다중 실험 (한꺼번에, ~3-4시간)
+# ============================================================
+
+# 실험 1: 낮은 알파
+python wiseft_sweep.py \
+    --scratch runs/scratch/weights/best.pt \
+    --finetuned runs/finetuned/weights/best.pt \
+    --data data/custom.yaml \
+    --alpha-min 0.0 \
+    --alpha-max 0.3 \
+    --focus-range 0.05 \
+    --output-dir runs/wiseft/exp1_low
+
+# 실험 2: 중간 알파
+python wiseft_sweep.py \
+    --scratch runs/scratch/weights/best.pt \
+    --finetuned runs/finetuned/weights/best.pt \
+    --data data/custom.yaml \
+    --alpha-min 0.2 \
+    --alpha-max 0.6 \
+    --focus-range 0.05 \
+    --output-dir runs/wiseft/exp2_mid
+
+# 실험 3: 동적
+python wiseft_sweep.py \
+    --scratch runs/scratch/weights/best.pt \
+    --finetuned runs/finetuned/weights/best.pt \
+    --data data/custom.yaml \
+    --enable-dynamic-alpha \
+    --enable-layerwise-alpha \
+    --output-dir runs/wiseft/exp3_dynamic
+
+
+# ============================================================
+# 백그라운드 실행 (nohup)
+# ============================================================
+
+# 방법 1: nohup
+nohup python wiseft_sweep.py \
+    --scratch runs/scratch/weights/best.pt \
+    --finetuned runs/finetuned/weights/best.pt \
+    --data data/custom.yaml \
+    > wiseft_run.log 2>&1 &
+
+# 방법 2: screen
+screen -S wiseft
+python wiseft_sweep.py ...
+# Ctrl+A, D로 detach
+
+# 방법 3: tmux
+tmux new -s wiseft
+python wiseft_sweep.py ...
+# Ctrl+B, D로 detach
+
+
+# ============================================================
+# 로그 확인
+# ============================================================
+tail -f wiseft_run.log
+tail -100 wiseft_run.log
+
+
+# ============================================================
+# 결과 확인
+# ============================================================
+cat runs/wiseft/exp/wiseft_report.md
+ls -lh runs/wiseft/*/best_merged*.pt
