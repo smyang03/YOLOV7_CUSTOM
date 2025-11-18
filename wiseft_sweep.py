@@ -516,21 +516,21 @@ def create_temp_data_yaml(original_yaml: str, val_set_name: str, output_dir: str
     # Get original val path and construct new path
     original_val = data_config.get('val', '')
 
-    if isinstance(original_val, str):
-        # Single val path - replace with specific validation set
-        val_path = Path(original_val)
-        if val_path.suffix == '.txt':
-            # If it's a txt file, replace filename
-            new_val_path = val_path.parent / f'{val_set_name}.txt'
-        else:
-            # If it's a directory, append validation set name
-            new_val_path = val_path.parent / val_set_name
+    if isinstance(original_val, list):
+        # Multiple val paths - use first one as base
+        print(f"  ℹ️  val is a list, using first entry: {original_val[0]}")
+        original_val = original_val[0]
 
-        data_config['val'] = str(new_val_path)
+    # Now original_val is a string
+    val_path = Path(original_val)
+    if val_path.suffix == '.txt':
+        # If it's a txt file, replace filename
+        new_val_path = val_path.parent / f'{val_set_name}.txt'
     else:
-        # Multiple val paths - not supported yet, use first one
-        print(f"⚠️  Warning: Multiple val paths detected. Using first one only.")
-        data_config['val'] = str(original_val[0])
+        # If it's a directory, append validation set name
+        new_val_path = val_path.parent / val_set_name
+
+    data_config['val'] = str(new_val_path)
 
     # Save temporary yaml
     temp_yaml_path = Path(output_dir) / f'temp_{val_set_name}.yaml'
