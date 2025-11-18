@@ -495,6 +495,470 @@ def evaluate_model(model_path: str, data_yaml: str, img_size: int, batch_size: i
 
 
 # ============================================================================
+# Multi-Validation Set Evaluation Functions
+# ============================================================================
+
+def create_temp_data_yaml(original_yaml: str, val_set_name: str, output_dir: str) -> str:
+    """
+    Create temporary data.yaml with specific validation set
+
+    Args:
+        original_yaml: Path to original data.yaml
+        val_set_name: Name of validation set (e.g., 'valid1', 'valid2')
+        output_dir: Directory to save temp yaml
+
+    Returns:
+        Path to temporary yaml file
+    """
+    with open(original_yaml, 'r') as f:
+        data_config = yaml.safe_load(f)
+
+    # Get original val path and construct new path
+    original_val = data_config.get('val', '')
+
+    if isinstance(original_val, str):
+        # Single val path - replace with specific validation set
+        val_path = Path(original_val)
+        if val_path.suffix == '.txt':
+            # If it's a txt file, replace filename
+            new_val_path = val_path.parent / f'{val_set_name}.txt'
+        else:
+            # If it's a directory, append validation set name
+            new_val_path = val_path.parent / val_set_name
+
+        data_config['val'] = str(new_val_path)
+    else:
+        # Multiple val paths - not supported yet, use first one
+        print(f"⚠️  Warning: Multiple val paths detected. Using first one only.")
+        data_config['val'] = str(original_val[0])
+
+    # Save temporary yaml
+    temp_yaml_path = Path(output_dir) / f'temp_{val_set_name}.yaml'
+    temp_yaml_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(temp_yaml_path, 'w') as f:
+        yaml.dump(data_config, f)
+
+    return str(temp_yaml_path)
+
+
+def calculate_average_metrics(metrics_list: List[Dict]) -> Dict:
+    """
+    Calculate average metrics from multiple validation sets
+
+    Args:
+        metrics_list: List of metric dictionaries
+
+    Returns:
+        Average metrics dictionary
+    """
+    if not metrics_list:
+        return {
+            'precision': 0.0,
+            'recall': 0.0,
+            'map50': 0.0,
+            'map': 0.0,
+            'fitness': 0.0
+        }
+
+    avg_metrics = {}
+    metric_keys = ['precision', 'recall', 'map50', 'map', 'fitness']
+
+    for key in metric_keys:
+        values = [m.get(key, 0.0) for m in metrics_list]
+        avg_metrics[key] = sum(values) / len(values)
+
+    return avg_metrics
+
+
+def evaluate_model_multi_valset(model_path: str, data_yaml: str, val_sets: List[str],
+                                img_size: int, batch_size: int, conf_thres: float,
+                                iou_thres: float, device: str, workers: int,
+                                output_dir: str) -> Dict:
+    """
+    Evaluate model on multiple validation sets separately
+
+    Args:
+        model_path: Path to model weights
+        data_yaml: Path to data yaml
+        val_sets: List of validation set names (e.g., ['valid1', 'valid2'])
+        ... (other args same as evaluate_model)
+
+    Returns:
+        {
+            'overall': {
+                'precision': float,
+                'recall': float,
+                'map50': float,
+                'map': float,
+                'fitness': float
+            },
+            'per_valset': {
+                'valid1': {'precision': ..., 'fitness': ...},
+                'valid2': {'precision': ..., 'fitness': ...}
+            }
+        }
+    """
+    results = {'per_valset': {}}
+
+    print(f"  Evaluating on {len(val_sets)} validation sets: {val_sets}")
+
+    # Evaluate on each validation set
+    for val_set_name in val_sets:
+        print(f"\n  📊 Evaluating on {val_set_name}...")
+
+        # Create temporary data yaml for this validation set
+        temp_yaml = create_temp_data_yaml(data_yaml, val_set_name, output_dir)
+
+        # Evaluate
+        eval_dir = Path(output_dir) / f'eval_{val_set_name}'
+        metrics = evaluate_model(
+            model_path, temp_yaml, img_size, batch_size,
+            conf_thres, iou_thres, device, workers, str(eval_dir)
+        )
+
+        results['per_valset'][val_set_name] = metrics
+
+        # Print results for this validation set
+        print(f"     P={metrics['precision']:.3f}, R={metrics['recall']:.3f}, "
+              f"mAP@.5={metrics['map50']:.3f}, Fitness={metrics['fitness']:.3f}")
+
+    # Calculate overall average
+    results['overall'] = calculate_average_metrics(
+        list(results['per_valset'].values())
+    )
+
+    print(f"\n  📈 Overall Average: "
+          f"P={results['overall']['precision']:.3f}, "
+          f"R={results['overall']['recall']:.3f}, "
+          f"mAP@.5={results['overall']['map50']:.3f}, "
+          f"Fitness={results['overall']['fitness']:.3f}")
+
+    return results
+
+
+# ============================================================================
+# Baseline Trade-off Analysis
+# ============================================================================
+
+def analyze_baseline_tradeoff(scratch_metrics: Dict, finetuned_metrics: Dict,
+                              val_sets: List[str]) -> bool:
+    """
+    Analyze trade-off between validation sets in baseline models
+
+    Args:
+        scratch_metrics: Metrics from scratch model (with per_valset)
+        finetuned_metrics: Metrics from finetuned model (with per_valset)
+        val_sets: List of validation set names
+
+    Returns:
+        True if trade-off exists (WiSE-FT recommended)
+        False if no trade-off
+    """
+    print("\n" + "="*80)
+    print("🔍 BASELINE TRADE-OFF ANALYSIS")
+    print("="*80)
+
+    # Print comparison table
+    print(f"\n{'Model':<15} {'Metric':<10}", end='')
+    for val_name in val_sets:
+        print(f" {val_name:<12}", end='')
+    print(f" {'Overall':<12}")
+    print("─" * 80)
+
+    # Scratch model
+    print(f"{'Scratch':<15} {'fitness':<10}", end='')
+    scratch_fitness_vals = []
+    for val_name in val_sets:
+        fit = scratch_metrics['per_valset'][val_name]['fitness']
+        scratch_fitness_vals.append(fit)
+        print(f" {fit:<12.4f}", end='')
+    print(f" {scratch_metrics['overall']['fitness']:<12.4f}")
+
+    # Fine-tuned model
+    print(f"{'Fine-tuned':<15} {'fitness':<10}", end='')
+    finetuned_fitness_vals = []
+    for val_name in val_sets:
+        fit = finetuned_metrics['per_valset'][val_name]['fitness']
+        finetuned_fitness_vals.append(fit)
+        print(f" {fit:<12.4f}", end='')
+    print(f" {finetuned_metrics['overall']['fitness']:<12.4f}")
+
+    print("─" * 80)
+
+    # Analyze changes
+    print(f"\n{'Validation Set':<15} {'Change':<15} {'% Change':<15} {'Direction':<15}")
+    print("─" * 80)
+
+    changes = []
+    for i, val_name in enumerate(val_sets):
+        scratch_fit = scratch_fitness_vals[i]
+        finetuned_fit = finetuned_fitness_vals[i]
+        change = finetuned_fit - scratch_fit
+        pct_change = (change / scratch_fit * 100) if scratch_fit > 0 else 0
+
+        if change > 0.02:
+            direction = "↑ Improved"
+        elif change < -0.02:
+            direction = "↓ Degraded"
+        else:
+            direction = "→ Similar"
+
+        changes.append((val_name, change, pct_change, direction))
+        print(f"{val_name:<15} {change:>+8.4f}      {pct_change:>+8.1f}%      {direction:<15}")
+
+    print("─" * 80)
+
+    # Determine if trade-off exists
+    positive_changes = [v for v, c, p, d in changes if c > 0.02]
+    negative_changes = [v for v, c, p, d in changes if c < -0.02]
+
+    if positive_changes and negative_changes:
+        print(f"\n⚠️  TRADE-OFF DETECTED!")
+        print(f"   ✅ Improved on: {', '.join(positive_changes)}")
+        print(f"   ❌ Degraded on: {', '.join(negative_changes)}")
+        print(f"\n   💡 WiSE-FT is RECOMMENDED to find balance between validation sets!")
+        print("="*80)
+        return True
+    elif negative_changes:
+        print(f"\n⚠️  PERFORMANCE DEGRADATION DETECTED!")
+        print(f"   ❌ Degraded on: {', '.join(negative_changes)}")
+        print(f"   → Fine-tuned model performs worse on some validation sets.")
+        print(f"\n   💡 WiSE-FT may help recover some performance.")
+        print("="*80)
+        return True
+    else:
+        print(f"\n✅ No significant trade-off detected.")
+        print(f"   → Fine-tuned model improves or maintains performance on all validation sets.")
+        print(f"   → WiSE-FT may not provide additional benefits.")
+        print("="*80)
+        return False
+
+
+# ============================================================================
+# Visualization Functions
+# ============================================================================
+
+def visualize_valset_tradeoff(all_results: List[Dict], val_sets: List[str]):
+    """
+    Visualize trade-off between two validation sets (ASCII scatter plot)
+
+    Args:
+        all_results: List of results with per_valset metrics
+        val_sets: List of validation set names (must be exactly 2)
+    """
+    if len(val_sets) != 2:
+        print("\n⚠️  Trade-off visualization only supports exactly 2 validation sets.")
+        print(f"   Current validation sets: {val_sets}")
+        return
+
+    val1_name, val2_name = val_sets
+
+    print("\n" + "="*80)
+    print(f"📊 VALIDATION SET TRADE-OFF: {val1_name} vs {val2_name}")
+    print("="*80)
+
+    # Extract data points
+    points = []
+    for result in all_results:
+        if 'per_valset' not in result['metrics']:
+            continue
+
+        val1_fit = result['metrics']['per_valset'].get(val1_name, {}).get('fitness', 0)
+        val2_fit = result['metrics']['per_valset'].get(val2_name, {}).get('fitness', 0)
+        alpha = result['alpha']
+        points.append((val1_fit, val2_fit, alpha))
+
+    if not points:
+        print("No data points available for visualization.")
+        return
+
+    # Find min/max for scaling
+    val1_values = [p[0] for p in points]
+    val2_values = [p[1] for p in points]
+
+    val1_min, val1_max = min(val1_values), max(val1_values)
+    val2_min, val2_max = min(val2_values), max(val2_values)
+
+    # Add some padding
+    val1_range = val1_max - val1_min
+    val2_range = val2_max - val2_min
+    val1_min -= val1_range * 0.1
+    val1_max += val1_range * 0.1
+    val2_min -= val2_range * 0.1
+    val2_max += val2_range * 0.1
+
+    # ASCII plot
+    print(f"\n{val2_name} fitness ↑\n")
+
+    grid_height = 15
+    grid_width = 60
+
+    for y in range(grid_height, -1, -1):
+        val2_level = val2_min + (val2_max - val2_min) * (y / grid_height)
+
+        # Y-axis label
+        if y == grid_height or y == 0 or y == grid_height // 2:
+            print(f"{val2_level:5.3f} │ ", end='')
+        else:
+            print("      │ ", end='')
+
+        # Plot points
+        for x in range(grid_width + 1):
+            val1_level = val1_min + (val1_max - val1_min) * (x / grid_width)
+
+            # Find closest point
+            closest_alpha = None
+            min_dist = float('inf')
+
+            for v1, v2, alpha in points:
+                # Normalize distances
+                dist_x = (v1 - val1_level) / (val1_max - val1_min) * grid_width
+                dist_y = (v2 - val2_level) / (val2_max - val2_min) * grid_height
+                dist = (dist_x**2 + dist_y**2)**0.5
+
+                if dist < min_dist and dist < 2.0:  # threshold
+                    min_dist = dist
+                    closest_alpha = alpha
+
+            if closest_alpha is not None:
+                # Different markers for different alphas
+                if closest_alpha == 0.0:
+                    print("S", end='')  # Scratch
+                elif closest_alpha == 1.0:
+                    print("F", end='')  # Finetuned
+                else:
+                    print("●", end='')  # WiSE-FT
+            else:
+                # Grid background
+                if x % 10 == 0 or y % 5 == 0:
+                    print("·", end='')
+                else:
+                    print(" ", end='')
+
+        print()
+
+    # X-axis
+    print("      └" + "─" * grid_width + f"→ {val1_name} fitness")
+    print(f"      {val1_min:.3f}" + " " * (grid_width - 12) + f"{val1_max:.3f}")
+
+    # Legend
+    print("\n" + "─" * 80)
+    print("Legend:")
+    print("  S : Scratch model (α=0.0)")
+    print("  F : Fine-tuned model (α=1.0)")
+    print("  ● : WiSE-FT merged models (0.0 < α < 1.0)")
+    print("\nGoal: Find point closest to upper-right (high on both validation sets)")
+    print("="*80)
+
+
+# ============================================================================
+# Multi-Criteria Alpha Selection
+# ============================================================================
+
+def find_best_alpha_multi_criteria(all_results: List[Dict], val_sets: List[str],
+                                   metric: str = 'fitness'):
+    """
+    Find best alpha using multiple criteria
+
+    Args:
+        all_results: List of results with per_valset metrics
+        val_sets: List of validation set names
+        metric: Metric to optimize (default: 'fitness')
+    """
+    print("\n" + "="*80)
+    print("🎯 OPTIMAL ALPHA RECOMMENDATIONS (Multi-Criteria)")
+    print("="*80)
+
+    # Filter results that have per_valset data
+    valid_results = [r for r in all_results if 'per_valset' in r['metrics']]
+
+    if not valid_results:
+        print("No results with per-validation-set data available.")
+        return
+
+    # Criterion 1: Best overall average
+    best_overall = max(valid_results, key=lambda x: x['metrics']['overall'].get(metric, 0))
+    print(f"\n1️⃣  Best Overall Average {metric.upper()}:")
+    print(f"   α = {best_overall['alpha']:.3f}")
+    print(f"   Overall {metric}: {best_overall['metrics']['overall'][metric]:.4f}")
+    for val_name in val_sets:
+        val_metric = best_overall['metrics']['per_valset'][val_name][metric]
+        print(f"   {val_name}: {val_metric:.4f}")
+
+    # Criterion 2: Most balanced (minimum difference between validation sets)
+    if len(val_sets) == 2:
+        def balance_score(result):
+            vals = [result['metrics']['per_valset'][v][metric] for v in val_sets]
+            return -abs(vals[0] - vals[1])  # Negative because we want minimum difference
+
+        best_balanced = max(valid_results, key=balance_score)
+        val1_metric = best_balanced['metrics']['per_valset'][val_sets[0]][metric]
+        val2_metric = best_balanced['metrics']['per_valset'][val_sets[1]][metric]
+
+        print(f"\n2️⃣  Most Balanced (minimum difference):")
+        print(f"   α = {best_balanced['alpha']:.3f}")
+        print(f"   {val_sets[0]}: {val1_metric:.4f}")
+        print(f"   {val_sets[1]}: {val2_metric:.4f}")
+        print(f"   Difference: {abs(val1_metric - val2_metric):.4f}")
+
+    # Criterion 3: Best worst-case (maximize minimum)
+    def worst_case_score(result):
+        vals = [result['metrics']['per_valset'][v][metric] for v in val_sets]
+        return min(vals)
+
+    best_worst_case = max(valid_results, key=worst_case_score)
+    print(f"\n3️⃣  Best Worst-Case (maximize minimum):")
+    print(f"   α = {best_worst_case['alpha']:.3f}")
+    min_val = worst_case_score(best_worst_case)
+    print(f"   Minimum {metric}: {min_val:.4f}")
+    for val_name in val_sets:
+        val_metric = best_worst_case['metrics']['per_valset'][val_name][metric]
+        marker = "⬅️ MIN" if abs(val_metric - min_val) < 1e-6 else ""
+        print(f"   {val_name}: {val_metric:.4f} {marker}")
+
+    # Criterion 4: Best sum
+    def sum_score(result):
+        vals = [result['metrics']['per_valset'][v][metric] for v in val_sets]
+        return sum(vals)
+
+    best_sum = max(valid_results, key=sum_score)
+    print(f"\n4️⃣  Best Total Sum:")
+    print(f"   α = {best_sum['alpha']:.3f}")
+    total = sum_score(best_sum)
+    print(f"   Total {metric}: {total:.4f}")
+    for val_name in val_sets:
+        val_metric = best_sum['metrics']['per_valset'][val_name][metric]
+        print(f"   {val_name}: {val_metric:.4f}")
+
+    # Recommendation
+    print("\n" + "─" * 80)
+
+    # Count votes
+    candidates = [best_overall, best_balanced if len(val_sets) == 2 else None,
+                 best_worst_case, best_sum]
+    candidates = [c for c in candidates if c is not None]
+
+    from collections import Counter
+    alpha_votes = Counter([c['alpha'] for c in candidates])
+    recommended_alpha, votes = alpha_votes.most_common(1)[0]
+
+    print(f"\n🏆 RECOMMENDED ALPHA: {recommended_alpha:.3f}")
+    print(f"   (Selected by {votes}/{len(candidates)} criteria)")
+
+    recommended = next(r for r in valid_results if r['alpha'] == recommended_alpha)
+    print(f"\n   Performance:")
+    for val_name in val_sets:
+        val_metric = recommended['metrics']['per_valset'][val_name][metric]
+        print(f"   {val_name}: {metric}={val_metric:.4f}")
+    print(f"   Overall: {metric}={recommended['metrics']['overall'][metric]:.4f}")
+
+    print("="*80)
+
+    return recommended_alpha
+
+
+# ============================================================================
 # Search Functions
 # ============================================================================
 
@@ -521,12 +985,13 @@ def run_coarse_search(alphas: List[float], scratch_path: str, finetuned_path: st
         print(f"Merging weights: {1-alpha:.1%} scratch + {alpha:.1%} finetuned...")
         merge_weights(scratch_path, finetuned_path, alpha, str(merged_path))
 
-        # Evaluate
-        print(f"Evaluating merged model...")
+        # Evaluate on multiple validation sets
+        print(f"Evaluating merged model on {len(args.val_sets)} validation sets...")
         eval_output_dir = Path(args.output_dir) / 'temp' / f'eval_alpha_{alpha:.3f}'
-        metrics = evaluate_model(
+        metrics = evaluate_model_multi_valset(
             str(merged_path),
             args.data,
+            args.val_sets,
             args.img_size,
             args.batch_size,
             args.conf_thres,
@@ -544,10 +1009,12 @@ def run_coarse_search(alphas: List[float], scratch_path: str, finetuned_path: st
         }
         results.append(result)
 
-        # Print metrics
-        print(f"Results: P={metrics['precision']:.3f}, R={metrics['recall']:.3f}, "
-              f"mAP@.5={metrics['map50']:.3f}, mAP@.5:.95={metrics['map']:.3f}, "
-              f"Fitness={metrics['fitness']:.3f}")
+        # Print summary
+        print(f"\n  Summary for α={alpha:.3f}:")
+        for val_name in args.val_sets:
+            val_metrics = metrics['per_valset'][val_name]
+            print(f"    {val_name}: Fitness={val_metrics['fitness']:.4f}")
+        print(f"    Overall: Fitness={metrics['overall']['fitness']:.4f}")
 
         # Check early stopping
         if args.early_stop and len(results) >= args.stop_patience:
@@ -577,12 +1044,13 @@ def run_fine_search(fine_alphas: List[float], scratch_path: str, finetuned_path:
         print(f"Merging weights: {1-alpha:.1%} scratch + {alpha:.1%} finetuned...")
         merge_weights(scratch_path, finetuned_path, alpha, str(merged_path))
 
-        # Evaluate
-        print(f"Evaluating merged model...")
+        # Evaluate on multiple validation sets
+        print(f"Evaluating merged model on {len(args.val_sets)} validation sets...")
         eval_output_dir = Path(args.output_dir) / 'temp' / f'eval_alpha_{alpha:.3f}_fine'
-        metrics = evaluate_model(
+        metrics = evaluate_model_multi_valset(
             str(merged_path),
             args.data,
+            args.val_sets,
             args.img_size,
             args.batch_size,
             args.conf_thres,
@@ -600,10 +1068,12 @@ def run_fine_search(fine_alphas: List[float], scratch_path: str, finetuned_path:
         }
         results.append(result)
 
-        # Print metrics
-        print(f"Results: P={metrics['precision']:.3f}, R={metrics['recall']:.3f}, "
-              f"mAP@.5={metrics['map50']:.3f}, mAP@.5:.95={metrics['map']:.3f}, "
-              f"Fitness={metrics['fitness']:.3f}")
+        # Print summary
+        print(f"\n  Summary for α={alpha:.3f}:")
+        for val_name in args.val_sets:
+            val_metrics = metrics['per_valset'][val_name]
+            print(f"    {val_name}: Fitness={val_metrics['fitness']:.4f}")
+        print(f"    Overall: Fitness={metrics['overall']['fitness']:.4f}")
 
     return results
 
@@ -1400,34 +1870,39 @@ def main():
     coarse_alphas = generate_alpha_list(args.alpha_min, args.alpha_max, args.focus_range, args.skip_zero)
     print(f"\n📊 Coarse search alphas ({len(coarse_alphas)} values): {coarse_alphas}")
 
-    # 4. Evaluate Baselines
+    # 4. Evaluate Baselines (on each validation set!)
     print("\n" + "="*80)
     print("📏 EVALUATING BASELINE MODELS")
     print("="*80)
 
-    print("\n🔹 Scratch baseline...")
+    print("\n🔹 Scratch baseline (α=0.0)...")
     scratch_eval_dir = output_dir / 'baseline_scratch'
-    scratch_metrics = evaluate_model(
-        args.scratch, args.data, args.img_size, args.batch_size,
+    scratch_metrics = evaluate_model_multi_valset(
+        args.scratch, args.data, args.val_sets, args.img_size, args.batch_size,
         args.conf_thres, args.iou_thres, args.device, args.workers,
         str(scratch_eval_dir)
     )
     scratch_baseline = {'alpha': 0.0, 'metrics': scratch_metrics, 'merged_model_path': args.scratch}
-    print(f"Scratch: P={scratch_metrics['precision']:.3f}, R={scratch_metrics['recall']:.3f}, "
-          f"mAP@.5={scratch_metrics['map50']:.3f}, mAP@.5:.95={scratch_metrics['map']:.3f}, "
-          f"Fitness={scratch_metrics['fitness']:.3f}")
 
-    print("\n🔹 Finetuned baseline...")
+    print("\n🔹 Fine-tuned baseline (α=1.0)...")
     finetuned_eval_dir = output_dir / 'baseline_finetuned'
-    finetuned_metrics = evaluate_model(
-        args.finetuned, args.data, args.img_size, args.batch_size,
+    finetuned_metrics = evaluate_model_multi_valset(
+        args.finetuned, args.data, args.val_sets, args.img_size, args.batch_size,
         args.conf_thres, args.iou_thres, args.device, args.workers,
         str(finetuned_eval_dir)
     )
     finetuned_baseline = {'alpha': 1.0, 'metrics': finetuned_metrics, 'merged_model_path': args.finetuned}
-    print(f"Finetuned: P={finetuned_metrics['precision']:.3f}, R={finetuned_metrics['recall']:.3f}, "
-          f"mAP@.5={finetuned_metrics['map50']:.3f}, mAP@.5:.95={finetuned_metrics['map']:.3f}, "
-          f"Fitness={finetuned_metrics['fitness']:.3f}")
+
+    # 4.5 Trade-off Analysis
+    has_tradeoff = analyze_baseline_tradeoff(scratch_metrics, finetuned_metrics, args.val_sets)
+
+    if not has_tradeoff and not args.enable_tradeoff_viz:
+        print("\n💡 Recommendation: Fine-tuned model performs well on all validation sets.")
+        print("   WiSE-FT may not provide significant additional benefits.")
+        response = input("\n   Continue with WiSE-FT search anyway? (y/n): ")
+        if response.lower() != 'y':
+            print("\n👋 Exiting. Use fine-tuned model directly.")
+            return
 
     # 5. Coarse Search
     print("\n" + "="*80)
@@ -1484,7 +1959,17 @@ def main():
                                               initial_alphas, max_iterations=10)
         all_results.extend(dynamic_results)
 
-    # 8. Find Overall Best
+    # 8. Add baselines to results for comprehensive analysis
+    all_results_with_baselines = [scratch_baseline, finetuned_baseline] + all_results
+
+    # 9. Multi-Validation Set Trade-off Visualization
+    if len(args.val_sets) >= 2:
+        visualize_valset_tradeoff(all_results_with_baselines, args.val_sets)
+
+    # 10. Multi-Criteria Alpha Selection
+    recommended_alpha = find_best_alpha_multi_criteria(all_results_with_baselines, args.val_sets, args.metric)
+
+    # 11. Find Overall Best (traditional single-metric approach)
     best_overall = find_best_alpha(all_results, args.metric)
 
     # Phase 2: Confidence Intervals for best alpha
@@ -1496,8 +1981,8 @@ def main():
         print(f"  Fitness: {best_ci['fitness']['mean']:.4f} ± {best_ci['fitness']['std']:.4f}")
         print(f"  95% CI: [{best_ci['fitness']['ci_95_lower']:.4f}, {best_ci['fitness']['ci_95_upper']:.4f}]")
 
-    # Phase 2: Trade-off Visualization
-    if args.enable_tradeoff_viz and len(all_results) > 1:
+    # Phase 2: Legacy Trade-off Visualization (target class vs others)
+    if args.enable_tradeoff_viz and args.target_class and len(all_results) > 1:
         print_tradeoff_chart_enhanced(all_results, args.target_class)
 
     # 9. Print Executive Summary
