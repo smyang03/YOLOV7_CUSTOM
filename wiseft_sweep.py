@@ -1124,7 +1124,15 @@ def find_best_alpha(results: List[Dict], metric: str = 'fitness') -> Dict:
     if not results:
         return None
 
-    best = max(results, key=lambda x: x['metrics'][metric])
+    # Handle both old and new metric structures
+    def get_metric(result):
+        metrics = result['metrics']
+        if 'overall' in metrics:
+            return metrics['overall'][metric]
+        else:
+            return metrics[metric]
+
+    best = max(results, key=get_metric)
 
     return {
         'best_alpha': best['alpha'],
@@ -1135,13 +1143,42 @@ def find_best_alpha(results: List[Dict], metric: str = 'fitness') -> Dict:
 
 def print_results_table(results: List[Dict], metric_name: str = 'fitness'):
     """Print results in a formatted table"""
-    print(f"\n{'Alpha':<10} {'Precision':<12} {'Recall':<12} {'mAP@.5':<12} {'mAP@.5:.95':<12} {metric_name.capitalize():<12}")
-    print("─" * 70)
 
-    for r in results:
-        m = r['metrics']
-        print(f"{r['alpha']:<10.3f} {m['precision']:<12.3f} {m['recall']:<12.3f} "
-              f"{m['map50']:<12.3f} {m['map']:<12.3f} {m[metric_name]:<12.3f}")
+    # Check if results have per_valset structure
+    has_per_valset = len(results) > 0 and 'per_valset' in results[0]['metrics']
+
+    if has_per_valset:
+        # New structure with per_valset
+        print(f"\n{'Alpha':<10} {'Overall':<12} | Per-Validation-Set {metric_name.capitalize()}")
+        print("─" * 80)
+
+        for r in results:
+            m = r['metrics']
+            overall_metric = m['overall'][metric_name]
+
+            # Get per_valset metrics
+            valset_str = " | ".join([f"{name}={m['per_valset'][name][metric_name]:.4f}"
+                                     for name in sorted(m['per_valset'].keys())])
+
+            print(f"{r['alpha']:<10.3f} {overall_metric:<12.4f} | {valset_str}")
+
+        # Print detailed table
+        print(f"\n{'Alpha':<10} {'Precision':<12} {'Recall':<12} {'mAP@.5':<12} {'mAP@.5:.95':<12} {'Fitness':<12}")
+        print("─" * 80)
+
+        for r in results:
+            m = r['metrics']['overall']  # Use overall metrics
+            print(f"{r['alpha']:<10.3f} {m['precision']:<12.3f} {m['recall']:<12.3f} "
+                  f"{m['map50']:<12.3f} {m['map']:<12.3f} {m['fitness']:<12.3f}")
+    else:
+        # Old structure (backward compatibility)
+        print(f"\n{'Alpha':<10} {'Precision':<12} {'Recall':<12} {'mAP@.5':<12} {'mAP@.5:.95':<12} {metric_name.capitalize():<12}")
+        print("─" * 70)
+
+        for r in results:
+            m = r['metrics']
+            print(f"{r['alpha']:<10.3f} {m['precision']:<12.3f} {m['recall']:<12.3f} "
+                  f"{m['map50']:<12.3f} {m['map']:<12.3f} {m[metric_name]:<12.3f}")
 
 
 def generate_executive_summary(best_alpha_info: Dict, scratch_baseline: Dict,
@@ -1156,13 +1193,23 @@ def generate_executive_summary(best_alpha_info: Dict, scratch_baseline: Dict,
     best_metrics = best_alpha_info['best_metrics']
     metric = args.metric
 
+    # Handle both old and new metric structures
+    def get_metric_value(metrics_dict, key):
+        if 'overall' in metrics_dict:
+            return metrics_dict['overall'][key]
+        else:
+            return metrics_dict[key]
+
     # Calculate improvements
-    scratch_value = scratch_baseline['metrics'][metric]
-    finetuned_value = finetuned_baseline['metrics'][metric]
-    best_value = best_metrics[metric]
+    scratch_value = get_metric_value(scratch_baseline['metrics'], metric)
+    finetuned_value = get_metric_value(finetuned_baseline['metrics'], metric)
+    best_value = get_metric_value(best_metrics, metric)
 
     improvement_from_scratch = ((best_value - scratch_value) / (scratch_value + 1e-8)) * 100
     improvement_from_finetuned = ((best_value - finetuned_value) / (finetuned_value + 1e-8)) * 100
+
+    # Get detailed metrics (handle both structures)
+    best_detail = best_metrics.get('overall', best_metrics)
 
     summary = f"""
 ================================================================================
@@ -1187,12 +1234,12 @@ Performance Comparison:
   Improvement from scratch:   {improvement_from_scratch:+.2f}%
   Improvement from finetuned: {improvement_from_finetuned:+.2f}%
 
-Detailed Metrics (Best Alpha):
-  Precision:    {best_metrics['precision']:.4f}
-  Recall:       {best_metrics['recall']:.4f}
-  mAP@.5:       {best_metrics['map50']:.4f}
-  mAP@.5:.95:   {best_metrics['map']:.4f}
-  Fitness:      {best_metrics['fitness']:.4f}
+Detailed Metrics (Best Alpha - Overall):
+  Precision:    {best_detail['precision']:.4f}
+  Recall:       {best_detail['recall']:.4f}
+  mAP@.5:       {best_detail['map50']:.4f}
+  mAP@.5:.95:   {best_detail['map']:.4f}
+  Fitness:      {best_detail['fitness']:.4f}
 
 💡 Interpretation:
   Alpha = {best_alpha:.3f} means: {(1-best_alpha)*100:.1f}% scratch + {best_alpha*100:.1f}% finetuned
