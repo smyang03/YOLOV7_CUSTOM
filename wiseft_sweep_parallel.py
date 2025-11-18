@@ -167,7 +167,16 @@ def parallel_evaluate_wiseft(scratch_path: str, finetuned_path: str,
         temp_config = base_config.copy()
 
         # Update val path
-        original_val = Path(base_config.get('val', ''))
+        original_val = base_config.get('val', '')
+
+        # Handle both string and list formats
+        if isinstance(original_val, list):
+            # If val is a list, use the first one as base
+            original_val = original_val[0]
+            print(f"  ℹ️  val is a list, using first entry: {original_val}")
+
+        original_val = Path(original_val)
+
         if original_val.suffix == '.txt':
             new_val_path = original_val.parent / f'{val_set}.txt'
         else:
