@@ -26,6 +26,96 @@ def log_message(msg, log_file=None):
             f.write(log_line + '\n')
 
 
+def analyze_baseline_tradeoff(scratch_metrics: Dict, finetuned_metrics: Dict,
+                              val_sets: List[str]) -> bool:
+    """
+    Analyze trade-off between validation sets in baseline models
+
+    Args:
+        scratch_metrics: Metrics from scratch model (with per_valset)
+        finetuned_metrics: Metrics from finetuned model (with per_valset)
+        val_sets: List of validation set names
+
+    Returns:
+        True if trade-off exists (WiSE-FT recommended)
+        False if no trade-off
+    """
+    print("\n" + "="*80)
+    print("🔍 BASELINE TRADE-OFF ANALYSIS")
+    print("="*80)
+
+    # Print comparison table
+    print(f"\n{'Model':<15} {'Metric':<10}", end='')
+    for val_name in val_sets:
+        print(f" {val_name:<12}", end='')
+    print(f" {'Overall':<12}")
+    print("─" * 80)
+
+    # Scratch model
+    print(f"{'Scratch':<15} {'fitness':<10}", end='')
+    scratch_fitness_vals = []
+    for val_name in val_sets:
+        fit = scratch_metrics['per_valset'][val_name]['fitness']
+        scratch_fitness_vals.append(fit)
+        print(f" {fit:<12.4f}", end='')
+    print(f" {scratch_metrics['overall']['fitness']:<12.4f}")
+
+    # Fine-tuned model
+    print(f"{'Fine-tuned':<15} {'fitness':<10}", end='')
+    finetuned_fitness_vals = []
+    for val_name in val_sets:
+        fit = finetuned_metrics['per_valset'][val_name]['fitness']
+        finetuned_fitness_vals.append(fit)
+        print(f" {fit:<12.4f}", end='')
+    print(f" {finetuned_metrics['overall']['fitness']:<12.4f}")
+
+    print("─" * 80)
+
+    # Analyze changes
+    print(f"\n{'Validation Set':<15} {'Change':<15} {'% Change':<15} {'Direction':<15}")
+    print("─" * 80)
+
+    changes = []
+    for i, val_name in enumerate(val_sets):
+        scratch_fit = scratch_fitness_vals[i]
+        finetuned_fit = finetuned_fitness_vals[i]
+        change = finetuned_fit - scratch_fit
+        pct_change = (change / scratch_fit * 100) if scratch_fit > 0 else 0
+
+        if change > 0.02:
+            direction = "↑ Improved"
+        elif change < -0.02:
+            direction = "↓ Degraded"
+        else:
+            direction = "→ Similar"
+
+        changes.append((val_name, change, pct_change, direction))
+        print(f"{val_name:<15} {change:>+8.4f}      {pct_change:>+8.1f}%      {direction:<15}")
+
+    print("─" * 80)
+
+    # Determine if trade-off exists
+    positive_changes = [v for v, c, p, d in changes if c > 0.02]
+    negative_changes = [v for v, c, p, d in changes if c < -0.02]
+
+    if positive_changes and negative_changes:
+        print(f"\n⚠️  TRADE-OFF DETECTED!")
+        print(f"   ✅ Improved on: {', '.join(positive_changes)}")
+        print(f"   ❌ Degraded on: {', '.join(negative_changes)}")
+        print(f"\n   💡 WiSE-FT is RECOMMENDED to find balance between validation sets!")
+        print("="*80)
+        return True
+    elif negative_changes:
+        print(f"\n⚠️  Performance degradation detected on: {', '.join(negative_changes)}")
+        print(f"   💡 WiSE-FT may help recover some performance!")
+        print("="*80)
+        return True
+    else:
+        print(f"\n✅ No trade-off detected - fine-tuned model performs well on all validation sets")
+        print("="*80)
+        return False
+
+
 def evaluate_single_alpha_valset(alpha: float, val_set: str, model_path: str,
                                   data_yaml: str, gpu_id: int, args) -> Dict:
     """
@@ -157,6 +247,85 @@ def evaluate_single_alpha_valset(alpha: float, val_set: str, model_path: str,
         elapsed = time.time() - start_time
         log_message(f"[GPU {gpu_id}] ❌ Error: {str(e)} ({elapsed/60:.1f} min)", log_file)
         return None
+
+
+def evaluate_baseline_parallel(model_path: str, model_name: str, data_yaml: str,
+                               val_sets: List[str], num_gpus: int, args) -> Dict:
+    """
+    Evaluate baseline model (scratch or finetuned) on all validation sets in parallel
+
+    Returns:
+        {'per_valset': {...}, 'overall': {...}}
+    """
+    print(f"\n🔹 Evaluating {model_name} baseline...")
+
+    # Create temporary data yamls
+    output_dir = Path(args.output_dir) / 'baseline_eval'
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    with open(data_yaml, 'r') as f:
+        base_config = yaml.safe_load(f)
+
+    temp_yamls = {}
+    for val_set in val_sets:
+        temp_config = base_config.copy()
+        original_val = base_config.get('val', '')
+
+        if isinstance(original_val, list):
+            original_val = original_val[0]
+
+        original_val = Path(original_val)
+        if original_val.suffix == '.txt':
+            new_val_path = original_val.parent / f'{val_set}.txt'
+        else:
+            new_val_path = original_val.parent / val_set
+
+        temp_config['val'] = str(new_val_path)
+        temp_yaml_path = output_dir / f'data_{val_set}.yaml'
+        with open(temp_yaml_path, 'w') as f:
+            yaml.dump(temp_config, f)
+
+        temp_yamls[val_set] = str(temp_yaml_path)
+
+    # Parallel evaluation
+    results = {}
+    gpu_queue = list(range(num_gpus))
+
+    with ProcessPoolExecutor(max_workers=num_gpus) as executor:
+        future_to_valset = {}
+
+        for val_set in val_sets:
+            gpu_id = gpu_queue.pop(0) if gpu_queue else 0
+            future = executor.submit(
+                evaluate_single_alpha_valset,
+                -1.0,  # Dummy alpha for baseline
+                val_set,
+                model_path,
+                temp_yamls[val_set],
+                gpu_id,
+                args
+            )
+            future_to_valset[future] = (val_set, gpu_id)
+
+        for future in as_completed(future_to_valset):
+            val_set, gpu_id = future_to_valset[future]
+            result = future.result()
+
+            if result:
+                results[val_set] = result['metrics']
+
+            gpu_queue.append(gpu_id)
+
+    # Calculate overall average
+    avg_metrics = {}
+    for key in ['precision', 'recall', 'map50', 'map', 'fitness']:
+        values = [metrics[key] for metrics in results.values()]
+        avg_metrics[key] = sum(values) / len(values)
+
+    return {
+        'per_valset': results,
+        'overall': avg_metrics
+    }
 
 
 def parallel_evaluate_wiseft(scratch_path: str, finetuned_path: str,
@@ -389,8 +558,34 @@ if __name__ == '__main__':
 
     print(f"\n🎯 Alphas to test: {alphas}")
 
-    # Run parallel evaluation
+    # Evaluate baselines first
+    print("\n" + "="*80)
+    print("📏 EVALUATING BASELINE MODELS")
+    print("="*80)
+
     start_time = time.time()
+
+    # Scratch baseline (α=0.0)
+    scratch_metrics = evaluate_baseline_parallel(
+        args.scratch, "Scratch (α=0.0)", args.data,
+        args.val_sets, args.num_gpus, args
+    )
+
+    # Fine-tuned baseline (α=1.0)
+    finetuned_metrics = evaluate_baseline_parallel(
+        args.finetuned, "Fine-tuned (α=1.0)", args.data,
+        args.val_sets, args.num_gpus, args
+    )
+
+    # Trade-off analysis
+    has_tradeoff = analyze_baseline_tradeoff(
+        scratch_metrics, finetuned_metrics, args.val_sets
+    )
+
+    # Run WiSE-FT sweep
+    print("\n" + "="*80)
+    print("🔍 WISE-FT ALPHA SWEEP")
+    print("="*80)
 
     results = parallel_evaluate_wiseft(
         args.scratch, args.finetuned, args.data,
@@ -399,23 +594,73 @@ if __name__ == '__main__':
 
     elapsed = time.time() - start_time
 
-    # Print results
+    # Print results with baselines
     print("\n" + "="*80)
-    print("📊 RESULTS")
+    print("📊 COMPLETE RESULTS")
     print("="*80)
 
+    # Print header
+    print(f"\n{'Alpha':<8} {'Overall':<10}", end='')
+    for val_set in args.val_sets:
+        print(f" {val_set:<12}", end='')
+    print()
+    print("─" * 80)
+
+    # Scratch baseline
+    print(f"{'0.0*':<8} {scratch_metrics['overall']['fitness']:<10.4f}", end='')
+    for val_set in args.val_sets:
+        print(f" {scratch_metrics['per_valset'][val_set]['fitness']:<12.4f}", end='')
+    print(" (Scratch)")
+
+    # WiSE-FT results
     for r in sorted(results, key=lambda x: x['alpha']):
         alpha = r['alpha']
         overall = r['metrics']['overall']['fitness']
+        print(f"{alpha:<8.3f} {overall:<10.4f}", end='')
+        for val_set in args.val_sets:
+            fitness = r['metrics']['per_valset'][val_set]['fitness']
+            print(f" {fitness:<12.4f}", end='')
+        print()
 
-        print(f"\nα={alpha:.3f}  Overall: {overall:.4f}")
-        for valset, metrics in r['metrics']['per_valset'].items():
-            print(f"  {valset}: {metrics['fitness']:.4f}")
+    # Fine-tuned baseline
+    print(f"{'1.0*':<8} {finetuned_metrics['overall']['fitness']:<10.4f}", end='')
+    for val_set in args.val_sets:
+        print(f" {finetuned_metrics['per_valset'][val_set]['fitness']:<12.4f}", end='')
+    print(" (Fine-tuned)")
 
-    # Save results
+    print("─" * 80)
+    print("\n* Baselines (not interpolated)")
+
+    # Find best alpha
+    best_result = max(results, key=lambda x: x['metrics']['overall']['fitness'])
+    print(f"\n✅ Best WiSE-FT: α={best_result['alpha']:.3f}, fitness={best_result['metrics']['overall']['fitness']:.4f}")
+
+    # Save complete results including baselines
+    all_results = {
+        'baselines': {
+            'scratch': {
+                'alpha': 0.0,
+                'model_path': args.scratch,
+                'metrics': scratch_metrics
+            },
+            'finetuned': {
+                'alpha': 1.0,
+                'model_path': args.finetuned,
+                'metrics': finetuned_metrics
+            }
+        },
+        'wiseft_results': results,
+        'best_wiseft': {
+            'alpha': best_result['alpha'],
+            'fitness': best_result['metrics']['overall']['fitness'],
+            'metrics': best_result['metrics']
+        },
+        'has_tradeoff': has_tradeoff
+    }
+
     output_file = Path(args.output_dir) / 'results.json'
     with open(output_file, 'w') as f:
-        json.dump(results, f, indent=2)
+        json.dump(all_results, f, indent=2)
 
     print(f"\n💾 Results saved to: {output_file}")
     print(f"⏱️  Total time: {elapsed/60:.1f} minutes")
