@@ -1,0 +1,210 @@
+{
+  "baselines": {
+    "scratch": {
+      "alpha": 0.0,
+      "model_path": "new_list/600.pt",
+      "metrics": {
+        "per_valset": {
+          "valid2": {
+            "precision": 0.707,
+            "recall": 0.458,
+            "map50": 0.48,
+            "map": 0.377,
+            "fitness": 0.3873
+          },
+          "valid1": {
+            "precision": 0.871,
+            "recall": 0.798,
+            "map50": 0.828,
+            "map": 0.649,
+            "fitness": 0.6669
+          }
+        },
+        "overall": {
+          "precision": 0.7889999999999999,
+          "recall": 0.628,
+          "map50": 0.6539999999999999,
+          "map": 0.513,
+          "fitness": 0.5271
+        }
+      }
+    },
+    "finetuned": {
+      "alpha": 1.0,
+      "model_path": "new_list/620.pt",
+      "metrics": {
+        "per_valset": {
+          "valid2": {
+            "precision": 0.965,
+            "recall": 0.964,
+            "map50": 0.985,
+            "map": 0.823,
+            "fitness": 0.8392000000000001
+          },
+          "valid1": {
+            "precision": 0.883,
+            "recall": 0.755,
+            "map50": 0.804,
+            "map": 0.619,
+            "fitness": 0.6375000000000001
+          }
+        },
+        "overall": {
+          "precision": 0.9239999999999999,
+          "recall": 0.8594999999999999,
+          "map50": 0.8945000000000001,
+          "map": 0.721,
+          "fitness": 0.7383500000000001
+        }
+      }
+    }
+  },
+  "wiseft_results": [
+    {
+      "alpha": 0.2,
+      "merged_model_path": "runs/wiseft_parallel/parallel_eval/alpha_0.200.pt",
+      "metrics": {
+        "per_valset": {
+          "valid2": {
+            "precision": 0.599,
+            "recall": 0.385,
+            "map50": 0.398,
+            "map": 0.273,
+            "fitness": 0.28550000000000003
+          },
+          "valid1": {
+            "precision": 0.876,
+            "recall": 0.678,
+            "map50": 0.735,
+            "map": 0.542,
+            "fitness": 0.5613
+          }
+        },
+        "overall": {
+          "precision": 0.7375,
+          "recall": 0.5315000000000001,
+          "map50": 0.5665,
+          "map": 0.40750000000000003,
+          "fitness": 0.4234
+        }
+      }
+    },
+    {
+      "alpha": 0.0,
+      "merged_model_path": "runs/wiseft_parallel/parallel_eval/alpha_0.000.pt",
+      "metrics": {
+        "per_valset": {
+          "valid2": {
+            "precision": 0.707,
+            "recall": 0.458,
+            "map50": 0.48,
+            "map": 0.377,
+            "fitness": 0.3873
+          },
+          "valid1": {
+            "precision": 0.871,
+            "recall": 0.798,
+            "map50": 0.828,
+            "map": 0.649,
+            "fitness": 0.6669
+          }
+        },
+        "overall": {
+          "precision": 0.7889999999999999,
+          "recall": 0.628,
+          "map50": 0.6539999999999999,
+          "map": 0.513,
+          "fitness": 0.5271
+        }
+      }
+    },
+    {
+      "alpha": 0.3,
+      "merged_model_path": "runs/wiseft_parallel/parallel_eval/alpha_0.300.pt",
+      "metrics": {
+        "per_valset": {
+          "valid2": {
+            "precision": 0.423,
+            "recall": 0.341,
+            "map50": 0.28,
+            "map": 0.19,
+            "fitness": 0.199
+          },
+          "valid1": {
+            "precision": 0.633,
+            "recall": 0.528,
+            "map50": 0.521,
+            "map": 0.366,
+            "fitness": 0.38150000000000006
+          }
+        },
+        "overall": {
+          "precision": 0.528,
+          "recall": 0.4345,
+          "map50": 0.4005,
+          "map": 0.278,
+          "fitness": 0.29025
+        }
+      }
+    },
+    {
+      "alpha": 0.1,
+      "merged_model_path": "runs/wiseft_parallel/parallel_eval/alpha_0.100.pt",
+      "metrics": {
+        "per_valset": {
+          "valid2": {
+            "precision": 0.553,
+            "recall": 0.541,
+            "map50": 0.519,
+            "map": 0.379,
+            "fitness": 0.393
+          },
+          "valid1": {
+            "precision": 0.889,
+            "recall": 0.771,
+            "map50": 0.81,
+            "map": 0.625,
+            "fitness": 0.6435
+          }
+        },
+        "overall": {
+          "precision": 0.7210000000000001,
+          "recall": 0.656,
+          "map50": 0.6645000000000001,
+          "map": 0.502,
+          "fitness": 0.51825
+        }
+      }
+    }
+  ],
+  "best_wiseft": {
+    "alpha": 0.0,
+    "fitness": 0.5271,
+    "metrics": {
+      "per_valset": {
+        "valid2": {
+          "precision": 0.707,
+          "recall": 0.458,
+          "map50": 0.48,
+          "map": 0.377,
+          "fitness": 0.3873
+        },
+        "valid1": {
+          "precision": 0.871,
+          "recall": 0.798,
+          "map50": 0.828,
+          "map": 0.649,
+          "fitness": 0.6669
+        }
+      },
+      "overall": {
+        "precision": 0.7889999999999999,
+        "recall": 0.628,
+        "map50": 0.6539999999999999,
+        "map": 0.513,
+        "fitness": 0.5271
+      }
+    }
+  },
+  "has_tradeoff": true
+}
