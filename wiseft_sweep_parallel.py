@@ -50,7 +50,7 @@ def evaluate_single_alpha_valset(alpha: float, val_set: str, model_path: str,
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=1800, check=True)  # 30분 (대용량 검증 세트 지원)
+                              timeout=7200, check=True)  # 2시간 (대용량 검증 세트 지원)
 
         # Parse results
         output = result.stdout
