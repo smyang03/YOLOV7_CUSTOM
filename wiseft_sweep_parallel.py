@@ -138,7 +138,12 @@ def evaluate_single_alpha_valset(alpha: float, val_set: str, model_path: str,
     log_file = log_dir / f'gpu{gpu_id}_alpha{alpha:.3f}_{val_set}.log'
 
     start_time = time.time()
-    log_message(f"[GPU {gpu_id}] 🚀 Starting: α={alpha:.3f}, {val_set}", log_file)
+    # 간결한 시작 로그 (화면)
+    print(f"[GPU {gpu_id}] 🚀 α={alpha:.3f}, {val_set} - 평가 시작", flush=True)
+
+    # 상세 로그는 파일에만 기록
+    with open(log_file, 'a') as f:
+        f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting: α={alpha:.3f}, {val_set}\n")
 
     # Run test.py on specific GPU
     cmd = [
@@ -150,18 +155,13 @@ def evaluate_single_alpha_valset(alpha: float, val_set: str, model_path: str,
         '--conf-thres', str(args.conf_thres),
         '--iou-thres', str(args.iou_thres),
         '--task', 'val',
-        '--device', str(gpu_id),  # GPU 할당!
+        '--device', str(gpu_id),
         '--save-txt',
         '--save-json',
         '--exist-ok'
     ]
 
-    log_message(f"[GPU {gpu_id}] 📝 Command: {' '.join(cmd)}", log_file)
-
     try:
-        # 실시간 출력을 위한 Popen 사용
-        log_message(f"[GPU {gpu_id}] ⏳ Evaluating (this may take 10-90 minutes)...", log_file)
-
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -173,39 +173,33 @@ def evaluate_single_alpha_valset(alpha: float, val_set: str, model_path: str,
         output_lines = []
         last_progress_time = time.time()
 
-        # 실시간으로 출력 읽기
+        # 출력 읽기 (화면 출력 최소화)
         for line in iter(process.stdout.readline, ''):
             if line:
                 output_lines.append(line)
 
-                # 로그 파일에 모든 출력 저장
+                # 로그 파일에만 저장
                 with open(log_file, 'a') as f:
                     f.write(line)
 
-                # 중요한 진행 상황만 화면에 출력
-                line_lower = line.lower()
-                if any(keyword in line_lower for keyword in
-                       ['class', 'images', 'targets', 'speed:', 'all']):
-                    log_message(f"[GPU {gpu_id}] {line.strip()}", None)
-
-                # 30초마다 진행 상황 알림
+                # 2분마다만 간단한 진행 상황 표시
                 current_time = time.time()
-                if current_time - last_progress_time > 30:
+                if current_time - last_progress_time > 120:  # 30초 → 2분
                     elapsed = current_time - start_time
-                    log_message(f"[GPU {gpu_id}] ⏱️  Still running... ({elapsed/60:.1f} min elapsed)", None)
+                    print(f"[GPU {gpu_id}] ⏳ α={alpha:.3f}, {val_set} - 진행 중 ({elapsed/60:.0f}분 경과)", flush=True)
                     last_progress_time = current_time
 
-        # 프로세스 종료 대기 (타임아웃 포함)
+        # 프로세스 종료 대기
         try:
-            return_code = process.wait(timeout=7200)  # 2시간
+            return_code = process.wait(timeout=7200)
         except subprocess.TimeoutExpired:
             process.kill()
             elapsed = time.time() - start_time
-            log_message(f"[GPU {gpu_id}] ⏱️  Timeout after {elapsed/60:.1f} minutes", log_file)
+            print(f"[GPU {gpu_id}] ⏱️  α={alpha:.3f}, {val_set} - 타임아웃 ({elapsed/60:.0f}분)", flush=True)
             return None
 
         if return_code != 0:
-            log_message(f"[GPU {gpu_id}] ❌ Error: Process exited with code {return_code}", log_file)
+            print(f"[GPU {gpu_id}] ❌ α={alpha:.3f}, {val_set} - 에러 발생", flush=True)
             return None
 
         # 결과 파싱
@@ -234,7 +228,7 @@ def evaluate_single_alpha_valset(alpha: float, val_set: str, model_path: str,
                     continue
 
         elapsed = time.time() - start_time
-        log_message(f"[GPU {gpu_id}] ✅ Completed: α={alpha:.3f}, {val_set}, fitness={metrics['fitness']:.4f} ({elapsed/60:.1f} min)", log_file)
+        print(f"[GPU {gpu_id}] ✅ α={alpha:.3f}, {val_set} - 완료! fitness={metrics['fitness']:.4f} ({elapsed/60:.0f}분)", flush=True)
 
         return {
             'alpha': alpha,
@@ -556,11 +550,26 @@ if __name__ == '__main__':
         alphas.append(round(current, 3))
         current += args.focus_range
 
-    print(f"\n🎯 Alphas to test: {alphas}")
+    # 실험 계획 명확히 표시
+    print("\n" + "="*80)
+    print("📋 WiSE-FT 실험 계획")
+    print("="*80)
+    print(f"\n평가할 모델:")
+    print(f"  - Scratch 모델: {args.scratch}")
+    print(f"  - Fine-tuned 모델: {args.finetuned}")
+    print(f"\n평가할 Validation Sets:")
+    for vs in args.val_sets:
+        print(f"  - {vs}")
+    print(f"\n평가할 Alpha 값: {alphas}")
+    print(f"  (총 {len(alphas)}개 alpha × {len(args.val_sets)}개 validation set = {len(alphas)*len(args.val_sets)}개 평가)")
+    print(f"\n병렬 처리: GPU {args.num_gpus}개 사용")
+    print(f"예상 시간: ~{len(alphas)*len(args.val_sets)/args.num_gpus*10:.0f}분")
+    print("\n💡 Overall = Valid1과 Valid2의 평균 fitness")
+    print("="*80)
 
     # Evaluate baselines first
     print("\n" + "="*80)
-    print("📏 EVALUATING BASELINE MODELS")
+    print("📏 BASELINE 모델 평가")
     print("="*80)
 
     start_time = time.time()
@@ -594,46 +603,48 @@ if __name__ == '__main__':
 
     elapsed = time.time() - start_time
 
-    # Print results with baselines
+    # 결과 요약 (간결하게)
     print("\n" + "="*80)
-    print("📊 COMPLETE RESULTS")
+    print("📊 평가 결과 요약")
     print("="*80)
-
-    # Print header
-    print(f"\n{'Alpha':<8} {'Overall':<10}", end='')
-    for val_set in args.val_sets:
-        print(f" {val_set:<12}", end='')
+    print(f"\n💡 Overall = {' + '.join(args.val_sets)} 평균")
     print()
+
+    # 헤더
+    print(f"{'Alpha':<8} │ {'Overall':<10} │", end='')
+    for val_set in args.val_sets:
+        print(f" {val_set:<10} │", end='')
+    print(" 비고")
     print("─" * 80)
 
     # Scratch baseline
-    print(f"{'0.0*':<8} {scratch_metrics['overall']['fitness']:<10.4f}", end='')
+    print(f"{'0.0*':<8} │ {scratch_metrics['overall']['fitness']:<10.4f} │", end='')
     for val_set in args.val_sets:
-        print(f" {scratch_metrics['per_valset'][val_set]['fitness']:<12.4f}", end='')
-    print(" (Scratch)")
+        print(f" {scratch_metrics['per_valset'][val_set]['fitness']:<10.4f} │", end='')
+    print(" Scratch 모델")
 
     # WiSE-FT results
     for r in sorted(results, key=lambda x: x['alpha']):
         alpha = r['alpha']
         overall = r['metrics']['overall']['fitness']
-        print(f"{alpha:<8.3f} {overall:<10.4f}", end='')
+        print(f"{alpha:<8.3f} │ {overall:<10.4f} │", end='')
         for val_set in args.val_sets:
             fitness = r['metrics']['per_valset'][val_set]['fitness']
-            print(f" {fitness:<12.4f}", end='')
+            print(f" {fitness:<10.4f} │", end='')
         print()
 
     # Fine-tuned baseline
-    print(f"{'1.0*':<8} {finetuned_metrics['overall']['fitness']:<10.4f}", end='')
+    print(f"{'1.0*':<8} │ {finetuned_metrics['overall']['fitness']:<10.4f} │", end='')
     for val_set in args.val_sets:
-        print(f" {finetuned_metrics['per_valset'][val_set]['fitness']:<12.4f}", end='')
-    print(" (Fine-tuned)")
+        print(f" {finetuned_metrics['per_valset'][val_set]['fitness']:<10.4f} │", end='')
+    print(" Fine-tuned 모델")
 
     print("─" * 80)
-    print("\n* Baselines (not interpolated)")
+    print("* Baseline 모델 (WiSE-FT 아님)")
 
     # Find best alpha
     best_result = max(results, key=lambda x: x['metrics']['overall']['fitness'])
-    print(f"\n✅ Best WiSE-FT: α={best_result['alpha']:.3f}, fitness={best_result['metrics']['overall']['fitness']:.4f}")
+    print(f"\n🏆 최고 성능: α={best_result['alpha']:.3f}, Overall={best_result['metrics']['overall']['fitness']:.4f}")
 
     # Save complete results including baselines
     all_results = {
