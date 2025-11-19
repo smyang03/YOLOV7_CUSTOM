@@ -39,16 +39,37 @@ class WiseFTReportGenerator:
         raise FileNotFoundError("결과 파일을 찾을 수 없습니다. results.json 파일 경로를 지정하세요.")
 
     def load_results(self):
-        """결과 JSON 로드"""
+        """결과 JSON 로드 - 여러 구조 지원"""
         print(f"📂 결과 로드: {self.results_file}")
         with open(self.results_file, 'r') as f:
             data = json.load(f)
 
-        # 결과 정렬 (alpha 기준)
+        # 구조 1: 간단한 리스트 [{alpha: 0.0, metrics: {...}}, ...]
         if isinstance(data, list):
             return sorted(data, key=lambda x: x.get('alpha', 0))
-        else:
-            return data.get('results', [])
+
+        # 구조 2: {results: [...]}
+        if 'results' in data:
+            return sorted(data['results'], key=lambda x: x.get('alpha', 0))
+
+        # 구조 3: {baselines: {...}, wiseft_results: [...]}
+        if 'wiseft_results' in data:
+            results = []
+
+            # Baseline 모델들 추가
+            if 'baselines' in data:
+                if 'scratch' in data['baselines']:
+                    results.append(data['baselines']['scratch'])
+                if 'finetuned' in data['baselines']:
+                    results.append(data['baselines']['finetuned'])
+
+            # WiSE-FT 결과 추가
+            results.extend(data['wiseft_results'])
+
+            return sorted(results, key=lambda x: x.get('alpha', 0))
+
+        # 알 수 없는 구조
+        raise ValueError(f"지원하지 않는 결과 파일 구조입니다. 'results' 또는 'wiseft_results' 키가 필요합니다.")
 
     def add_line(self, text="", level=0):
         """리포트 라인 추가"""
