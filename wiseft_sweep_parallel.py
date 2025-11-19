@@ -12,6 +12,18 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict
 import json
+from datetime import datetime
+
+
+def log_message(msg, log_file=None):
+    """타임스탬프와 함께 로그 출력"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f"[{timestamp}] {msg}"
+    print(log_line, flush=True)
+
+    if log_file:
+        with open(log_file, 'a') as f:
+            f.write(log_line + '\n')
 
 
 def evaluate_single_alpha_valset(alpha: float, val_set: str, model_path: str,
@@ -30,7 +42,13 @@ def evaluate_single_alpha_valset(alpha: float, val_set: str, model_path: str,
     Returns:
         {'alpha': float, 'valset': str, 'metrics': {...}}
     """
-    print(f"[GPU {gpu_id}] Evaluating α={alpha:.3f} on {val_set}...")
+    # 로그 파일 설정
+    log_dir = Path(args.output_dir) / 'logs'
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f'gpu{gpu_id}_alpha{alpha:.3f}_{val_set}.log'
+
+    start_time = time.time()
+    log_message(f"[GPU {gpu_id}] 🚀 Starting: α={alpha:.3f}, {val_set}", log_file)
 
     # Run test.py on specific GPU
     cmd = [
@@ -48,12 +66,60 @@ def evaluate_single_alpha_valset(alpha: float, val_set: str, model_path: str,
         '--exist-ok'
     ]
 
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=7200, check=True)  # 2시간 (대용량 검증 세트 지원)
+    log_message(f"[GPU {gpu_id}] 📝 Command: {' '.join(cmd)}", log_file)
 
-        # Parse results
-        output = result.stdout
+    try:
+        # 실시간 출력을 위한 Popen 사용
+        log_message(f"[GPU {gpu_id}] ⏳ Evaluating (this may take 10-90 minutes)...", log_file)
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+
+        output_lines = []
+        last_progress_time = time.time()
+
+        # 실시간으로 출력 읽기
+        for line in iter(process.stdout.readline, ''):
+            if line:
+                output_lines.append(line)
+
+                # 로그 파일에 모든 출력 저장
+                with open(log_file, 'a') as f:
+                    f.write(line)
+
+                # 중요한 진행 상황만 화면에 출력
+                line_lower = line.lower()
+                if any(keyword in line_lower for keyword in
+                       ['class', 'images', 'targets', 'speed:', 'all']):
+                    log_message(f"[GPU {gpu_id}] {line.strip()}", None)
+
+                # 30초마다 진행 상황 알림
+                current_time = time.time()
+                if current_time - last_progress_time > 30:
+                    elapsed = current_time - start_time
+                    log_message(f"[GPU {gpu_id}] ⏱️  Still running... ({elapsed/60:.1f} min elapsed)", None)
+                    last_progress_time = current_time
+
+        # 프로세스 종료 대기 (타임아웃 포함)
+        try:
+            return_code = process.wait(timeout=7200)  # 2시간
+        except subprocess.TimeoutExpired:
+            process.kill()
+            elapsed = time.time() - start_time
+            log_message(f"[GPU {gpu_id}] ⏱️  Timeout after {elapsed/60:.1f} minutes", log_file)
+            return None
+
+        if return_code != 0:
+            log_message(f"[GPU {gpu_id}] ❌ Error: Process exited with code {return_code}", log_file)
+            return None
+
+        # 결과 파싱
+        output = ''.join(output_lines)
         metrics = {
             'precision': 0.0,
             'recall': 0.0,
@@ -77,19 +143,19 @@ def evaluate_single_alpha_valset(alpha: float, val_set: str, model_path: str,
                 except (ValueError, IndexError):
                     continue
 
-        print(f"[GPU {gpu_id}] ✓ α={alpha:.3f}, {val_set}: fitness={metrics['fitness']:.4f}")
+        elapsed = time.time() - start_time
+        log_message(f"[GPU {gpu_id}] ✅ Completed: α={alpha:.3f}, {val_set}, fitness={metrics['fitness']:.4f} ({elapsed/60:.1f} min)", log_file)
 
         return {
             'alpha': alpha,
             'valset': val_set,
-            'metrics': metrics
+            'metrics': metrics,
+            'elapsed_time': elapsed
         }
 
-    except subprocess.TimeoutExpired:
-        print(f"[GPU {gpu_id}] ✗ Timeout α={alpha:.3f}, {val_set}")
-        return None
     except Exception as e:
-        print(f"[GPU {gpu_id}] ✗ Error α={alpha:.3f}, {val_set}: {e}")
+        elapsed = time.time() - start_time
+        log_message(f"[GPU {gpu_id}] ❌ Error: {str(e)} ({elapsed/60:.1f} min)", log_file)
         return None
 
 
