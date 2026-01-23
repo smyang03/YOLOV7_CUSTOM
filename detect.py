@@ -418,11 +418,17 @@ def detect(save_img=False):
                     cv2.putText(im0, 'Green=GT, Red=Prediction', (10, 30),
                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
-                    # Save detection result image to result folder
+                    # Save detection result image to result folder (support Korean path)
                     result_img_path = save_dir / 'result' / rel_path
                     result_img_path.parent.mkdir(parents=True, exist_ok=True)
-                    cv2.imwrite(str(result_img_path), im0)
-                    print(f"  -> Saved result image: {result_img_path}")
+
+                    # Use cv2.imencode for Korean path support
+                    is_success, im_buf_arr = cv2.imencode(".jpg", im0)
+                    if is_success:
+                        im_buf_arr.tofile(str(result_img_path))
+                        print(f"  -> Saved result image: {result_img_path}")
+                    else:
+                        print(f"  -> ERROR: Failed to encode image: {result_img_path}")
 
                     # Update counters
                     log_data['saved_total'] += 1
@@ -477,8 +483,13 @@ def detect(save_img=False):
             # Save results (image with detections) - only for non-GT matching mode
             if save_img and not match_gt_mode:
                 if dataset.mode == 'image':
-                    cv2.imwrite(save_path, im0)
-                    print(f" The image with the result is saved in: {save_path}")
+                    # Use cv2.imencode for Korean path support
+                    is_success, im_buf_arr = cv2.imencode(".jpg", im0)
+                    if is_success:
+                        im_buf_arr.tofile(save_path)
+                        print(f" The image with the result is saved in: {save_path}")
+                    else:
+                        print(f" ERROR: Failed to encode image: {save_path}")
                 else:  # 'video' or 'stream'
                     if vid_path != save_path:  # new video
                         vid_path = save_path
