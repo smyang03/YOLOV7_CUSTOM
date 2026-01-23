@@ -177,6 +177,9 @@ def detect(save_img=False):
 
     # GT matching mode
     match_gt_mode = opt.match_gt
+    if match_gt_mode:
+        save_img = True  # Force save images in GT matching mode
+
     match_iou = opt.match_iou
     max_save = opt.max_save
     gt_root = opt.gt_root
@@ -392,34 +395,34 @@ def detect(save_img=False):
                             f.write(f"{pred[0]} {pred[1]:.5f} {pred[2]:.5f} {pred[3]:.5f} {pred[4]:.5f} {pred[5]:.5f}\n")
 
                     # Draw GT and prediction comparison image and save to result folder
-                    if save_img:
-                        # Draw GT bboxes in GREEN
-                        for gt in gt_labels:
-                            cls_id, x_center, y_center, width, height = gt
-                            # Convert normalized xywh to pixel xyxy
-                            img_h, img_w = im0.shape[:2]
-                            x1 = int((x_center - width/2) * img_w)
-                            y1 = int((y_center - height/2) * img_h)
-                            x2 = int((x_center + width/2) * img_w)
-                            y2 = int((y_center + height/2) * img_h)
+                    # Draw GT bboxes in GREEN
+                    for gt in gt_labels:
+                        cls_id, x_center, y_center, width, height = gt
+                        # Convert normalized xywh to pixel xyxy
+                        img_h, img_w = im0.shape[:2]
+                        x1 = int((x_center - width/2) * img_w)
+                        y1 = int((y_center - height/2) * img_h)
+                        x2 = int((x_center + width/2) * img_w)
+                        y2 = int((y_center + height/2) * img_h)
 
-                            label = f'GT: {names[int(cls_id)]}'
-                            plot_one_box([x1, y1, x2, y2], im0, label=label, color=(0, 255, 0), line_thickness=2)
+                        label = f'GT: {names[int(cls_id)]}'
+                        plot_one_box([x1, y1, x2, y2], im0, label=label, color=(0, 255, 0), line_thickness=2)
 
-                        # Draw prediction bboxes in RED
-                        if len(det):
-                            for *xyxy, conf, cls in reversed(det):
-                                label = f'Pred: {names[int(cls)]} {conf:.2f}'
-                                plot_one_box(xyxy, im0, label=label, color=(0, 0, 255), line_thickness=2)
+                    # Draw prediction bboxes in RED
+                    if len(det):
+                        for *xyxy, conf, cls in reversed(det):
+                            label = f'Pred: {names[int(cls)]} {conf:.2f}'
+                            plot_one_box(xyxy, im0, label=label, color=(0, 0, 255), line_thickness=2)
 
-                        # Add legend
-                        cv2.putText(im0, 'Green=GT, Red=Prediction', (10, 30),
+                    # Add legend
+                    cv2.putText(im0, 'Green=GT, Red=Prediction', (10, 30),
                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
-                        # Save detection result image to result folder
-                        result_img_path = save_dir / 'result' / rel_path
-                        result_img_path.parent.mkdir(parents=True, exist_ok=True)
-                        cv2.imwrite(str(result_img_path), im0)
+                    # Save detection result image to result folder
+                    result_img_path = save_dir / 'result' / rel_path
+                    result_img_path.parent.mkdir(parents=True, exist_ok=True)
+                    cv2.imwrite(str(result_img_path), im0)
+                    print(f"  -> Saved result image: {result_img_path}")
 
                     # Update counters
                     log_data['saved_total'] += 1
