@@ -180,6 +180,7 @@ def detect(save_img=False):
     match_iou = opt.match_iou
     max_save = opt.max_save
     gt_root = opt.gt_root
+    recursive = opt.recursive
 
     # Directories
     if match_gt_mode and opt.save_dir:
@@ -221,6 +222,7 @@ def detect(save_img=False):
             f.write(f"  - Weights: {weights}\n")
             f.write(f"  - GT Root: {gt_root}\n")
             f.write(f"  - Save Dir: {save_dir}\n")
+            f.write(f"  - Recursive Search: {recursive}\n")
             f.write(f"  - Match IoU: {match_iou:.2f}\n")
             f.write(f"  - Max Save: {max_save}\n")
             f.write(f"  - Max Empty (1%): {log_data['max_empty']}\n\n")
@@ -254,7 +256,7 @@ def detect(save_img=False):
         cudnn.benchmark = True  # set True to speed up constant image size inference
         dataset = LoadStreams(source, img_size=imgsz, stride=stride)
     else:
-        dataset = LoadImages(source, img_size=imgsz, stride=stride)
+        dataset = LoadImages(source, img_size=imgsz, stride=stride, recursive=recursive)
 
     # Get names and colors
     names = model.module.names if hasattr(model, 'module') else model.names
@@ -519,6 +521,7 @@ if __name__ == '__main__':
     parser.add_argument('--max-save', type=int, default=10000, help='maximum number of matched samples to save')
     parser.add_argument('--save-dir', type=str, default='', help='directory to save matched results')
     parser.add_argument('--gt-root', type=str, default='labels', help='GT labels root directory (replaces JPEGImages)')
+    parser.add_argument('--recursive', action='store_true', help='search for images in subdirectories recursively')
 
     opt = parser.parse_args()
     print(opt)
