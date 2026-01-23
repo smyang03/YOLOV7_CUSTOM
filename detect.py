@@ -391,11 +391,18 @@ def detect(save_img=False):
                         for pred in pred_labels:
                             f.write(f"{pred[0]} {pred[1]:.5f} {pred[2]:.5f} {pred[3]:.5f} {pred[4]:.5f} {pred[5]:.5f}\n")
 
-                    # Update save_path for result image (with directory structure)
+                    # Draw bboxes on image and save to result folder
                     if save_img:
+                        # Draw bboxes on image
+                        if len(det):
+                            for *xyxy, conf, cls in reversed(det):
+                                label = f'{names[int(cls)]} {conf:.2f}'
+                                plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=1)
+
+                        # Save detection result image to result folder
                         result_img_path = save_dir / 'result' / rel_path
                         result_img_path.parent.mkdir(parents=True, exist_ok=True)
-                        save_path = str(result_img_path)
+                        cv2.imwrite(str(result_img_path), im0)
 
                     # Update counters
                     log_data['saved_total'] += 1
@@ -447,8 +454,8 @@ def detect(save_img=False):
                 cv2.imshow(str(p), im0)
                 cv2.waitKey(1)  # 1 millisecond
 
-            # Save results (image with detections)
-            if save_img:
+            # Save results (image with detections) - only for non-GT matching mode
+            if save_img and not match_gt_mode:
                 if dataset.mode == 'image':
                     cv2.imwrite(save_path, im0)
                     print(f" The image with the result is saved in: {save_path}")
