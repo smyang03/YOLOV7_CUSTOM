@@ -169,6 +169,70 @@ def match_predictions_to_gt(gt_labels, pred_labels, iou_threshold):
     return True, matched_pairs
 
 
+def create_side_by_side_visualization(img, gt_labels, pred_labels, matched_pairs, names, colors):
+    """
+    Create side-by-side visualization of GT (left) and predictions (right)
+    img: original image (numpy array)
+    gt_labels: list of [class, x, y, w, h] (normalized)
+    pred_labels: list of [class, x, y, w, h, conf] (normalized)
+    matched_pairs: list of (gt_idx, pred_idx, iou)
+    names: class names
+    colors: class colors
+    Returns: concatenated image with GT on left and predictions on right
+    """
+    h, w = img.shape[:2]
+
+    # Create copies of the image
+    img_gt = img.copy()
+    img_pred = img.copy()
+
+    # Draw GT boxes on left image
+    for i, gt in enumerate(gt_labels):
+        cls, x_center, y_center, width, height = gt
+        cls = int(cls)
+
+        # Convert normalized xywh to pixel xyxy
+        x1 = int((x_center - width / 2) * w)
+        y1 = int((y_center - height / 2) * h)
+        x2 = int((x_center + width / 2) * w)
+        y2 = int((y_center + height / 2) * h)
+
+        # Draw box
+        label = f'GT: {names[cls]}'
+        plot_one_box([x1, y1, x2, y2], img_gt, label=label, color=colors[cls], line_thickness=2)
+
+    # Draw prediction boxes on right image
+    for i, pred in enumerate(pred_labels):
+        cls, x_center, y_center, width, height, conf = pred
+        cls = int(cls)
+
+        # Convert normalized xywh to pixel xyxy
+        x1 = int((x_center - width / 2) * w)
+        y1 = int((y_center - height / 2) * h)
+        x2 = int((x_center + width / 2) * w)
+        y2 = int((y_center + height / 2) * h)
+
+        # Find matching GT for this prediction
+        iou_str = ""
+        for gt_idx, pred_idx, iou in matched_pairs:
+            if pred_idx == i:
+                iou_str = f" IoU:{iou:.2f}"
+                break
+
+        # Draw box
+        label = f'Pred: {names[cls]} {conf:.2f}{iou_str}'
+        plot_one_box([x1, y1, x2, y2], img_pred, label=label, color=colors[cls], line_thickness=2)
+
+    # Add text labels at the top
+    cv2.putText(img_gt, 'Ground Truth', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+    cv2.putText(img_pred, 'Prediction', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+
+    # Concatenate horizontally
+    vis_img = np.hstack([img_gt, img_pred])
+
+    return vis_img
+
+
 def detect(save_img=False):
     source, weights, view_img, save_txt, imgsz, trace = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size, not opt.no_trace
     save_img = not opt.nosave and not source.endswith('.txt')  # save inference images
@@ -195,6 +259,8 @@ def detect(save_img=False):
         (save_dir / 'labels').mkdir(parents=True, exist_ok=True)
         (save_dir / 'labels_Correct').mkdir(parents=True, exist_ok=True)
         (save_dir / 'JPEGImages').mkdir(parents=True, exist_ok=True)
+        if opt.visualize:
+            (save_dir / 'result').mkdir(parents=True, exist_ok=True)
 
         # Initialize counters and log
         log_file = save_dir / 'matching_log.txt'
@@ -254,7 +320,7 @@ def detect(save_img=False):
         cudnn.benchmark = True  # set True to speed up constant image size inference
         dataset = LoadStreams(source, img_size=imgsz, stride=stride)
     else:
-        dataset = LoadImages(source, img_size=imgsz, stride=stride)
+        dataset = LoadImages(source, img_size=imgsz, stride=stride, recursive=opt.recursive)
 
     # Get names and colors
     names = model.module.names if hasattr(model, 'module') else model.names
@@ -383,6 +449,13 @@ def detect(save_img=False):
                     with open(pred_save_path, 'w') as f:
                         for pred in pred_labels:
                             f.write(f"{pred[0]} {pred[1]:.5f} {pred[2]:.5f} {pred[3]:.5f} {pred[4]:.5f} {pred[5]:.5f}\n")
+
+                    # Save visualization if enabled (only for matched with objects)
+                    if opt.visualize and not is_empty:
+                        vis_img = create_side_by_side_visualization(im0, gt_labels, pred_labels, matched_pairs, names, colors)
+                        vis_save_path = save_dir / 'result' / rel_path
+                        vis_save_path.parent.mkdir(parents=True, exist_ok=True)
+                        cv2.imwrite(str(vis_save_path), vis_img)
 
                     # Update counters
                     log_data['saved_total'] += 1
@@ -519,6 +592,8 @@ if __name__ == '__main__':
     parser.add_argument('--max-save', type=int, default=10000, help='maximum number of matched samples to save')
     parser.add_argument('--save-dir', type=str, default='', help='directory to save matched results')
     parser.add_argument('--gt-root', type=str, default='labels', help='GT labels root directory (replaces JPEGImages)')
+    parser.add_argument('--recursive', action='store_true', help='recursively search for images in subdirectories')
+    parser.add_argument('--visualize', action='store_true', help='save side-by-side visualization of GT and predictions')
 
     opt = parser.parse_args()
     print(opt)

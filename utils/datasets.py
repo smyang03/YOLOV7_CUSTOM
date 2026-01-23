@@ -280,13 +280,16 @@ class LoadImagestxt:
     def __len__(self):
         return self.nf
 class LoadImages:  # for inference
-    def __init__(self, path, img_size=640, stride=32):
+    def __init__(self, path, img_size=640, stride=32, recursive=False):
         #p = str(Path(path).absolute())  # os-agnostic absolute path
         p = str(Path(path))  # os-agnostic absolute path
         if '*' in p:
             files = sorted(glob.glob(p, recursive=True))  # glob
         elif os.path.isdir(p):
-            files = sorted(glob.glob(os.path.join(p, '*.*')))  # dir
+            if recursive:
+                files = sorted(glob.glob(os.path.join(p, '**', '*.*'), recursive=True))  # recursive dir
+            else:
+                files = sorted(glob.glob(os.path.join(p, '*.*')))  # dir
         elif os.path.isfile(p):
             files = [p]  # files
         else:
