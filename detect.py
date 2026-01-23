@@ -196,6 +196,7 @@ def detect(save_img=False):
         (save_dir / 'labels').mkdir(parents=True, exist_ok=True)
         (save_dir / 'labels_Correct').mkdir(parents=True, exist_ok=True)
         (save_dir / 'JPEGImages').mkdir(parents=True, exist_ok=True)
+        (save_dir / 'result').mkdir(parents=True, exist_ok=True)
 
         # Initialize counters and log
         log_file = save_dir / 'matching_log.txt'
@@ -367,6 +368,10 @@ def detect(save_img=False):
                     except ValueError:
                         rel_path = p.name
 
+                    # Remove leading 'JPEGImages' from relative path if present
+                    if isinstance(rel_path, Path) and len(rel_path.parts) > 0 and rel_path.parts[0] == 'JPEGImages':
+                        rel_path = Path(*rel_path.parts[1:]) if len(rel_path.parts) > 1 else Path(rel_path.name)
+
                     # Save image
                     img_save_path = save_dir / 'JPEGImages' / rel_path
                     img_save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -385,6 +390,12 @@ def detect(save_img=False):
                     with open(pred_save_path, 'w') as f:
                         for pred in pred_labels:
                             f.write(f"{pred[0]} {pred[1]:.5f} {pred[2]:.5f} {pred[3]:.5f} {pred[4]:.5f} {pred[5]:.5f}\n")
+
+                    # Update save_path for result image (with directory structure)
+                    if save_img:
+                        result_img_path = save_dir / 'result' / rel_path
+                        result_img_path.parent.mkdir(parents=True, exist_ok=True)
+                        save_path = str(result_img_path)
 
                     # Update counters
                     log_data['saved_total'] += 1
