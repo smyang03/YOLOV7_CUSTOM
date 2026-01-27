@@ -341,10 +341,22 @@ class LoadImages:  # for inference
         else:
             # Read image
             self.count += 1
-            input_array = np.fromfile(path, np.uint8)
-            img0 = cv2.imdecode(input_array,cv2.IMREAD_COLOR)
+            img0 = None
+            while img0 is None:
+                try:
+                    input_array = np.fromfile(path, np.uint8)
+                    if input_array.size == 0:
+                        raise ValueError(f'Empty file: {path}')
+                    img0 = cv2.imdecode(input_array, cv2.IMREAD_COLOR)
+                    if img0 is None:
+                        raise ValueError(f'Failed to decode image: {path}')
+                except Exception as e:
+                    print(f'\nWarning: Skipping corrupted image - {path} ({e})')
+                    if self.count == self.nf:
+                        raise StopIteration
+                    path = self.files[self.count]
+                    self.count += 1
             #img0 = cv2.imread(path)  # BGR
-            assert img0 is not None, 'Image Not Found ' + path
             #print(f'image {self.count}/{self.nf} {path}: ', end='')
 
         # Padded resize
