@@ -191,6 +191,19 @@ class ClassStatsTable(tk.Frame):
         )
         self._empty_lbl.pack()
 
+        # ── 배경 footer ───────────────────────────────────────
+        tk.Frame(self, bg=C_BORDER, height=1).pack(fill='x')
+        footer = tk.Frame(self, bg=C_SURFACE2)
+        footer.pack(fill='x')
+        tk.Label(footer, text='배경', bg=C_SURFACE2, fg=C_TEXT_DIM,
+                 font=(FF, 8, 'bold'), padx=8, pady=3).pack(side='left')
+        tk.Label(footer, text='(GT 없음 + 검출 없음)',
+                 bg=C_SURFACE2, fg=C_TEXT_DIM, font=FONT_SM).pack(side='left')
+        self._bg_count_var = tk.StringVar(value='0')
+        tk.Label(footer, textvariable=self._bg_count_var,
+                 bg=C_SURFACE2, fg=C_TEXT, font=FONT_MONO,
+                 padx=8).pack(side='right')
+
     # ── 행 생성 ───────────────────────────────────────────────
     def _add_row(self, cls_id: int) -> int:
         row_idx = self._next_row
@@ -251,6 +264,10 @@ class ClassStatsTable(tk.Frame):
                 elif base_fg:
                     lbl.configure(fg=base_fg)
 
+    def update_background(self, count: int):
+        """배경 이미지 수를 footer에 갱신합니다."""
+        self._bg_count_var.set(str(count))
+
     def reset(self):
         """새 검출 실행 시 테이블 초기화."""
         for w in self._body.winfo_children():
@@ -259,6 +276,7 @@ class ClassStatsTable(tk.Frame):
         self._row_data.clear()
         self._cells.clear()
         self._next_row = 0
+        self._bg_count_var.set('0')
         self._empty_lbl.pack()
 
 
@@ -843,6 +861,9 @@ class DetectionGui(tk.Tk):
 
         if class_stats:
             self._class_stats_table.update_stats(class_stats)
+        self._class_stats_table.update_background(
+            d.get('stats', {}).get('background', 0)
+        )
 
     # ══════════════════════════════════════════════════════════════
     #  로그 헬퍼
