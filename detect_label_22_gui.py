@@ -363,6 +363,8 @@ class DetectionGui(tk.Tk):
         right.pack(side='right')
         tk.Label(right, textvariable=self.v_elapsed,
                  bg=C_BG, fg=C_TEXT_DIM, font=FONT_SM).pack(side='right', padx=(6,0))
+        tk.Label(right, textvariable=self.v_eta,
+                 bg=C_BG, fg=C_WARNING, font=FONT_UI).pack(side='right', padx=(12,0))
         tk.Label(right, textvariable=self.v_status,
                  bg=C_BG, fg=C_TEXT, font=FONT_UI).pack(side='right')
 
@@ -377,8 +379,6 @@ class DetectionGui(tk.Tk):
         pb_txt.pack(fill='x')
         tk.Label(pb_txt, textvariable=self.v_progress,
                  bg=C_BG, fg=C_TEXT_DIM, font=FONT_SM).pack(side='left')
-        tk.Label(pb_txt, textvariable=self.v_eta,
-                 bg=C_BG, fg=C_TEXT_DIM, font=FONT_SM).pack(side='right')
 
     # ── 통계 카드 ────────────────────────────────────────────────
     def _build_stat_cards(self, parent):
@@ -403,6 +403,8 @@ class DetectionGui(tk.Tk):
         _btn(btn_row, '📊 리포트 열기', self._open_report,
              bg=C_BTN, fg=C_TEXT_DIM).pack(side='right', padx=(4,0))
         _btn(btn_row, '📂 결과 폴더', self._open_folder,
+             bg=C_BTN, fg=C_TEXT_DIM).pack(side='right', padx=(4,0))
+        _btn(btn_row, '📁 저장 경로', self._open_savedirs,
              bg=C_BTN, fg=C_TEXT_DIM).pack(side='right', padx=(4,0))
         _btn(btn_row, '🗑 지우기', self._clear_log,
              bg=C_BTN, fg=C_TEXT_DIM).pack(side='right')
@@ -695,7 +697,7 @@ class DetectionGui(tk.Tk):
         ratio = cur / tot if tot else 0
         self._pb.set(ratio)
         self.v_progress.set(f'{cur} / {tot}   ({ratio*100:.1f}%)')
-        self.v_eta.set(f'남은 시간  {_fmt_time(eta)}' if eta > 0 else '')
+        self.v_eta.set(f'⏳ {_fmt_time(eta)}' if eta > 0 else '')
 
         self._card_good.update(group.get('GOOD', 0), tot)
         self._card_miss.update(group.get('MISS', 0), tot)
@@ -736,6 +738,26 @@ class DetectionGui(tk.Tk):
         if not p.exists():
             messagebox.showwarning('알림', f'폴더가 존재하지 않습니다:\n{path}')
             return
+        _open_path(str(p))
+
+    def _open_savedirs(self):
+        """저장 경로(GOOD/MISS/FAIL 분류 폴더)를 탐색기로 엽니다."""
+        path = self.v_savedirs.get().strip()
+        if not path:
+            messagebox.showinfo('알림', '저장 경로를 먼저 설정해 주세요.')
+            return
+        p = Path(path)
+        if not p.exists():
+            if messagebox.askyesno('폴더 없음',
+                                   f'저장 경로가 아직 존재하지 않습니다:\n{p}\n\n'
+                                   '폴더를 생성하고 열까요?'):
+                try:
+                    p.mkdir(parents=True, exist_ok=True)
+                except Exception as exc:
+                    messagebox.showerror('생성 실패', str(exc))
+                    return
+            else:
+                return
         _open_path(str(p))
 
     def _open_report(self):
