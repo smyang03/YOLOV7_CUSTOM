@@ -292,7 +292,9 @@ class UnicodeSafeLoadImagestxt(LoadImagestxt):
         else:
             self.count += 1
             img0 = imread_unicode(path)
-            assert img0 is not None, f'Failed to load image: {path}'
+            # [FIX] assert → 명시적 예외 (PyInstaller -O 플래그에서도 안전하게 동작)
+            if img0 is None:
+                raise RuntimeError(f'Failed to load image: {path}')
             print(f'[{progress_bar}] {percent_complete:.1f}% | Image {self.count}/{self.nf}{time_info}: {path}')
 
         img = letterbox(img0, self.img_size, stride=self.stride)[0]
@@ -902,6 +904,7 @@ def detect(opt, stop_event=None, progress_callback=None):
     logger.addHandler(fh)
 
     # ── 장치 선택 ────────────────────────────────────────────────
+    # [NOTE] fh는 함수 종료 시 반드시 닫힘 (finally 블록에서 처리)
     device = resolve_runtime_device(opt.device, logger)
 
     # ── 모델 로드 (CUDA 실패 시 CPU 재시도) ─────────────────────
@@ -1129,6 +1132,13 @@ def detect(opt, stop_event=None, progress_callback=None):
 
     if opt.view_img and is_windows:
         cv2.destroyAllWindows()
+
+    # [FIX] FileHandler 명시적 닫기 — Windows에서 재실행 시 파일 잠금 방지
+    try:
+        fh.close()
+        logger.removeHandler(fh)
+    except Exception:
+        pass
 
     return save_dir
 

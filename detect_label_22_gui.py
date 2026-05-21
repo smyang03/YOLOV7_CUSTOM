@@ -151,7 +151,11 @@ class QueueWriter:
 
     def write(self, text):
         if text:
-            self.q.put(('__LOG__', text))
+            try:
+                # [FIX] put_nowait: 큐가 꽉 찼을 때 worker 스레드 블로킹 방지
+                self.q.put_nowait(('__LOG__', text))
+            except queue.Full:
+                pass  # 로그 드롭 (GUI 렌더링이 일시적으로 느릴 때만 발생)
 
     def flush(self):
         pass
@@ -171,7 +175,8 @@ class DetectionGui(tk.Tk):
         self.minsize(860, 700)
         self.configure(bg=C_BG)
 
-        self.log_queue      = queue.Queue()
+        # maxsize=2000: 큐 무제한 증가 방지 (초당 수천 장 처리 시에도 여유)
+        self.log_queue      = queue.Queue(maxsize=2000)
         self.worker         = None
         self.stop_event     = threading.Event()
         self.device_values  = {}
@@ -183,6 +188,9 @@ class DetectionGui(tk.Tk):
         self._build_ui()
         self._load_devices()
         self.after(100, self._drain_queue)
+
+        # [FIX] 창 닫기(X) 버튼 핸들러 — worker 실행 중 강제 종료 방지
+        self.protocol('WM_DELETE_WINDOW', self._on_close)
 
     # ── tkinter 변수 ────────────────────────────────────────────
     def _build_vars(self):
@@ -434,6 +442,8 @@ class DetectionGui(tk.Tk):
         """GPU 목록 탐색을 백그라운드 스레드에서 실행합니다."""
         self._device_combo.configure(values=['탐색 중…'], state='disabled')
         self.v_device.set('탐색 중…')
+        # [FIX] 탐색 중 실행 버튼 비활성화 (device_values가 비어있을 때 실행 방지)
+        self._btn_start.configure(state='disabled')
         t = threading.Thread(target=self._scan_devices, daemon=True)
         t.start()
 
@@ -466,6 +476,8 @@ class DetectionGui(tk.Tk):
         current = self.v_device.get()
         if current not in opts:
             self.v_device.set('자동(GPU 우선, 실패 시 CPU)')
+        # [FIX] 탐색 완료 후 실행 버튼 다시 활성화
+        self._btn_start.configure(state='normal')
 
     # ══════════════════════════════════════════════════════════════
     #  파일 / 폴더 선택
@@ -575,6 +587,19 @@ class DetectionGui(tk.Tk):
             target=self._worker, args=(opt, callback), daemon=True)
         self.worker.start()
         self._tick_elapsed()
+
+    def _on_close(self):
+        """창 닫기(X) 버튼 핸들러 — worker 실행 중이면 확인 후 종료."""
+        if self.worker and self.worker.is_alive():
+            from tkinter import messagebox as _mb
+            if not _mb.askyesno(
+                '종료 확인',
+                'Detection이 실행 중입니다.\n중지하고 종료하시겠습니까?\n\n'
+                '(현재 이미지 처리 후 종료됩니다)',
+            ):
+                return
+            self.stop_event.set()
+        self.destroy()
 
     def _stop(self):
         if self.worker and self.worker.is_alive():
