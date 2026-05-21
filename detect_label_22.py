@@ -760,6 +760,8 @@ def generate_html_report(save_dir, stats, group_stats, total_images,
         if interrupted else ''
     )
 
+    import html as _html  # HTML 이스케이프 (파일명 특수문자 대응)
+
     classes_str = ', '.join(str(c) for c in opt.classes) if opt.classes else '전체'
     category_labels = {
         'good_detect': '정상 검출',
@@ -775,9 +777,12 @@ def generate_html_report(save_dir, stats, group_stats, total_images,
     for cat in RESULT_CATEGORIES:
         items = category_items.get(cat, [])
         display_name = category_labels.get(cat, cat)
+        # [FIX] 파일명에 <, >, & 등 특수문자가 있어도 HTML이 깨지지 않도록 이스케이프
+        escaped_items = [_html.escape(name) for name in items[:20]]
+        items_html = '<br>'.join(escaped_items) if escaped_items else '-'
         category_rows += (
             f"<tr><td>{display_name}</td><td>{len(items)}개</td>"
-            f"<td>{'<br>'.join(items[:20]) if items else '-'}</td></tr>"
+            f"<td>{items_html}</td></tr>"
         )
 
     diff_preview_html = ""
@@ -788,7 +793,8 @@ def generate_html_report(save_dir, stats, group_stats, total_images,
         display_name = category_labels.get(cat, cat)
         diff_preview_html += f"<h3>{display_name} 샘플 ({min(len(items), sample_limit)} / {len(items)}개)</h3><ul>"
         for item in items[:sample_limit]:
-            diff_preview_html += f"<li>{item}</li>"
+            # [FIX] 파일명 HTML 이스케이프
+            diff_preview_html += f"<li>{_html.escape(item)}</li>"
         diff_preview_html += "</ul>"
 
     html = f"""<!DOCTYPE html>
@@ -833,6 +839,7 @@ table{{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:24px}}
 th,td{{padding:9px 12px;border:1px solid #21262d;text-align:left}}
 th{{background:#161b22;color:#8b949e;font-weight:600;font-size:11px}}
 tr:nth-child(odd){{background:#0d1117}}
+tr:nth-child(even){{background:#161b22}}
 h3{{font-size:14px;margin:14px 0 8px;color:#8ab4f8}}
 ul{{margin:0 0 14px 20px}}
 li{{margin-bottom:4px;font-size:13px}}
