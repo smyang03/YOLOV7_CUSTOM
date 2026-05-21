@@ -619,6 +619,28 @@ def evaluate_detections(pred, gt_boxes, im0s, img, gn, names, conf_thres, iou_th
                 result['matched_gt'].add(best_gt_idx)
                 result['matched_pred'].add(pred_idx)
 
+        # ── 클래스별 어노테이션 레벨 통계 ────────────────────────
+        per_class_stats = {}
+
+        for orig_gt_idx, gt_box in filtered_gt_boxes:
+            cls_id = int(gt_box[0])
+            s = per_class_stats.setdefault(
+                cls_id, {'gt': 0, 'matched_gt': 0, 'miss': 0, 'false': 0})
+            s['gt'] += 1
+            if orig_gt_idx in result['matched_gt']:
+                s['matched_gt'] += 1
+            else:
+                s['miss'] += 1
+
+        for pred_idx, (*xyxy, conf, cls) in filtered_det:
+            if pred_idx not in result['matched_pred']:
+                cls_id = int(cls)
+                s = per_class_stats.setdefault(
+                    cls_id, {'gt': 0, 'matched_gt': 0, 'miss': 0, 'false': 0})
+                s['false'] += 1
+
+        result['per_class_stats'] = per_class_stats
+
     # ── Precision / Recall 계산 ──────────────────────────────────
     filtered_gt_count   = len(filtered_gt_boxes)
     filtered_pred_count = len(filtered_det)
@@ -1091,6 +1113,8 @@ def detect(opt, stop_event=None, progress_callback=None):
     # 리포트 샘플 이미지 수집 (카테고리별 최대 REPORT_SAMPLE_LIMIT장)
     sample_vis_paths    = {cat: [] for cat in ['miss_detect', 'false_detect', 'low_conf']}
     report_samples_dir  = save_dir / 'report_samples'
+    # 클래스별 GT 어노테이션 레벨 통계
+    global_class_stats: dict = {}
     total_bb      = 0
     debug_saved   = 0
     debug_failed  = 0
@@ -1195,6 +1219,13 @@ def detect(opt, stop_event=None, progress_callback=None):
             category_items[category].append(str(Path(path).name))
             total_bb += int(result.get('bbox_count', len(result.get('pred_info', []))))
 
+            # 클래스별 통계 누적
+            for _cid, _cs in result.get('per_class_stats', {}).items():
+                _gs = global_class_stats.setdefault(
+                    _cid, {'gt': 0, 'matched_gt': 0, 'miss': 0, 'false': 0})
+                for _k in ('gt', 'matched_gt', 'miss', 'false'):
+                    _gs[_k] += _cs[_k]
+
             # 리포트용 샘플 이미지 저장 (MISS/FAIL 카테고리만, 슬롯이 남은 경우)
             if (
                 category in sample_vis_paths
@@ -1250,6 +1281,7 @@ def detect(opt, stop_event=None, progress_callback=None):
                 progress_callback(
                     idx + 1, len(dataset), category,
                     dict(stats), dict(group_stats), elapsed, eta,
+                    {k: dict(v) for k, v in global_class_stats.items()},
                 )
             except Exception:
                 pass
