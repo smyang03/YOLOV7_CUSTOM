@@ -41,13 +41,15 @@ from utils.torch_utils import select_device, load_classifier, time_synchronized,
 
 
 # ── 결과 분류 상수 ────────────────────────────────────────────────
-RESULT_CATEGORIES = ['good_detect', 'miss_detect', 'false_detect', 'background', 'low_conf']
+RESULT_CATEGORIES = ['good_detect', 'miss_detect', 'false_detect',
+                     'background', 'background_false', 'low_conf']
 RESULT_GROUPS = {
-    'good_detect': 'GOOD',
-    'background':  'GOOD',
-    'miss_detect': 'MISS',
-    'false_detect':'FAIL',
-    'low_conf':    'FAIL',
+    'good_detect':      'GOOD',
+    'background':       'GOOD',
+    'miss_detect':      'MISS',
+    'false_detect':     'FAIL',
+    'background_false': 'FAIL',   # GT=0이지만 모델이 예측을 낸 경우 (배경 오검출)
+    'low_conf':         'FAIL',
 }
 IMAGE_EXTENSIONS = {'.bmp', '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp'}
 REPORT_SAMPLE_LIMIT = 3   # HTML 리포트에 보여줄 카테고리별 샘플 이미지 수
@@ -657,14 +659,19 @@ def evaluate_detections(pred, gt_boxes, im0s, img, gn, names, conf_thres, iou_th
 
     # ── 카테고리 결정 ────────────────────────────────────────────
     if filtered_gt_count > 0:
+        # GT가 있는 이미지
         if result['recall'] >= min_recall:
             result['category'] = 'good_detect' if all_conf_good else 'low_conf'
         elif result['recall'] > 0:
             result['category'] = 'miss_detect'
         else:
-            result['category'] = 'false_detect'
+            result['category'] = 'false_detect'   # GT 있으나 매칭 전혀 안 됨
     else:
-        result['category'] = 'false_detect' if filtered_pred_count > 0 else 'background'
+        # GT가 없는 이미지 (배경)
+        if filtered_pred_count > 0:
+            result['category'] = 'background_false'  # 배경인데 모델이 오검출
+        else:
+            result['category'] = 'background'         # 정상 배경 (진짜 무검출)
 
     result['bbox_count'] = filtered_pred_count
 
@@ -810,14 +817,15 @@ def generate_html_report(save_dir, stats, group_stats, total_images,
 
     classes_str = ', '.join(str(c) for c in opt.classes) if opt.classes else '전체'
     category_labels = {
-        'good_detect': '정상 검출',
-        'background': '배경(검출 없음)',
-        'miss_detect': '미검출',
-        'false_detect': '오검출',
-        'low_conf': '저신뢰 검출',
+        'good_detect':      '정상 검출',
+        'background':       '배경 (정상 무검출)',
+        'background_false': '배경 오검출 (GT없음)',
+        'miss_detect':      '미검출',
+        'false_detect':     '오검출 (GT있음)',
+        'low_conf':         '저신뢰 검출',
     }
     category_items = category_items or {}
-    diff_categories = ['miss_detect', 'false_detect', 'low_conf']
+    diff_categories = ['miss_detect', 'false_detect', 'background_false', 'low_conf']
 
     category_rows = ""
     for cat in RESULT_CATEGORIES:
@@ -973,13 +981,15 @@ li{{margin-bottom:4px;font-size:13px}}
     <tbody>
       <tr><td>good_detect</td><td style="color:#3fb950">정상</td>
           <td>{stats.get('good_detect',0)}</td><td>{pct(stats.get('good_detect',0))}%</td></tr>
-      <tr><td>background</td><td style="color:#3fb950">정상</td>
+      <tr><td>background</td><td style="color:#3fb950">정상 배경</td>
           <td>{stats.get('background',0)}</td><td>{pct(stats.get('background',0))}%</td></tr>
       <tr><td>miss_detect</td><td style="color:#d29922">미검출</td>
           <td>{stats.get('miss_detect',0)}</td><td>{pct(stats.get('miss_detect',0))}%</td></tr>
-      <tr><td>false_detect</td><td style="color:#f85149">오검출</td>
+      <tr><td>false_detect</td><td style="color:#f85149">오검출 (GT있음)</td>
           <td>{stats.get('false_detect',0)}</td><td>{pct(stats.get('false_detect',0))}%</td></tr>
-      <tr><td>low_conf</td><td style="color:#f85149">오검출</td>
+      <tr><td>background_false</td><td style="color:#f85149">배경 오검출 (GT없음)</td>
+          <td>{stats.get('background_false',0)}</td><td>{pct(stats.get('background_false',0))}%</td></tr>
+      <tr><td>low_conf</td><td style="color:#f85149">저신뢰 검출</td>
           <td>{stats.get('low_conf',0)}</td><td>{pct(stats.get('low_conf',0))}%</td></tr>
     </tbody>
   </table>

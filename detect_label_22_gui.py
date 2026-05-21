@@ -191,6 +191,32 @@ class ClassStatsTable(tk.Frame):
         )
         self._empty_lbl.pack()
 
+        # ── 배경 footer (정상 / 오검출 2행) ──────────────────
+        tk.Frame(self, bg=C_BORDER, height=1).pack(fill='x')
+
+        # 배경 정상 행
+        f_ok = tk.Frame(self, bg=C_SURFACE2)
+        f_ok.pack(fill='x')
+        tk.Label(f_ok, text='배경 정상', bg=C_SURFACE2, fg=C_TEXT_DIM,
+                 font=(FF, 8, 'bold'), padx=8, pady=3, width=12, anchor='w').pack(side='left')
+        tk.Label(f_ok, text='GT없음 + 검출없음',
+                 bg=C_SURFACE2, fg=C_TEXT_DIM, font=FONT_SM).pack(side='left')
+        self._bg_count_var = tk.StringVar(value='0')
+        tk.Label(f_ok, textvariable=self._bg_count_var,
+                 bg=C_SURFACE2, fg=C_SUCCESS, font=FONT_MONO, padx=8).pack(side='right')
+
+        # 배경 오검출 행
+        tk.Frame(self, bg=C_BORDER, height=1).pack(fill='x')
+        f_fp = tk.Frame(self, bg=C_SURFACE2)
+        f_fp.pack(fill='x')
+        tk.Label(f_fp, text='배경 오검출', bg=C_SURFACE2, fg=C_TEXT_DIM,
+                 font=(FF, 8, 'bold'), padx=8, pady=3, width=12, anchor='w').pack(side='left')
+        tk.Label(f_fp, text='GT없음 + 검출있음 (모델 오인식)',
+                 bg=C_SURFACE2, fg=C_TEXT_DIM, font=FONT_SM).pack(side='left')
+        self._bg_false_count_var = tk.StringVar(value='0')
+        tk.Label(f_fp, textvariable=self._bg_false_count_var,
+                 bg=C_SURFACE2, fg=C_DANGER, font=FONT_MONO, padx=8).pack(side='right')
+
     # ── 행 생성 ───────────────────────────────────────────────
     def _add_row(self, cls_id: int) -> int:
         row_idx = self._next_row
@@ -251,6 +277,11 @@ class ClassStatsTable(tk.Frame):
                 elif base_fg:
                     lbl.configure(fg=base_fg)
 
+    def update_background(self, bg_count: int, bg_false_count: int = 0):
+        """배경 정상 / 배경 오검출 수를 footer에 갱신합니다."""
+        self._bg_count_var.set(str(bg_count))
+        self._bg_false_count_var.set(str(bg_false_count) if bg_false_count else '-')
+
     def reset(self):
         """새 검출 실행 시 테이블 초기화."""
         for w in self._body.winfo_children():
@@ -259,6 +290,8 @@ class ClassStatsTable(tk.Frame):
         self._row_data.clear()
         self._cells.clear()
         self._next_row = 0
+        self._bg_count_var.set('0')
+        self._bg_false_count_var.set('-')
         self._empty_lbl.pack()
 
 
@@ -843,6 +876,11 @@ class DetectionGui(tk.Tk):
 
         if class_stats:
             self._class_stats_table.update_stats(class_stats)
+        _s = d.get('stats', {})
+        self._class_stats_table.update_background(
+            _s.get('background', 0),
+            _s.get('background_false', 0),
+        )
 
     # ══════════════════════════════════════════════════════════════
     #  로그 헬퍼
