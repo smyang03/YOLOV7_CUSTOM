@@ -170,7 +170,7 @@ class DetectionGui(tk.Tk):
     # ── 초기화 ──────────────────────────────────────────────────
     def __init__(self):
         super().__init__()
-        self.title(f'Detect Label 22    v{APP_VERSION}')
+        self.title(f'객체 검출 평가 Tool    v{APP_VERSION}')
         self.geometry('1000x820')
         self.minsize(860, 700)
         self.configure(bg=C_BG)
