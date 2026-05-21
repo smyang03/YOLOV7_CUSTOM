@@ -62,7 +62,7 @@ FONT_MONO = (FF_MONO, 8)
 # ══════════════════════════════════════════════════════════════════
 
 def _btn(parent, text, command, bg=C_BTN, fg=C_TEXT, hover=C_BTN_H, **kw):
-    """평평한 커스텀 버튼."""
+    """평평한 커스텀 버튼 (disabled 상태에서는 hover 효과 없음)."""
     b = tk.Button(
         parent, text=text, command=command,
         bg=bg, fg=fg,
@@ -70,8 +70,17 @@ def _btn(parent, text, command, bg=C_BTN, fg=C_TEXT, hover=C_BTN_H, **kw):
         relief='flat', bd=0, padx=14, pady=7,
         cursor='hand2', font=FONT_UI, **kw,
     )
-    b.bind('<Enter>', lambda _: b.configure(bg=hover))
-    b.bind('<Leave>', lambda _: b.configure(bg=bg))
+
+    def _on_enter(_):
+        if b.cget('state') != 'disabled':
+            b.configure(bg=hover)
+
+    def _on_leave(_):
+        if b.cget('state') != 'disabled':
+            b.configure(bg=bg)
+
+    b.bind('<Enter>', _on_enter)
+    b.bind('<Leave>', _on_leave)
     return b
 
 
@@ -88,18 +97,6 @@ def _entry(parent, textvariable, width=None, **kw):
         highlightbackground=C_BORDER, highlightthickness=1,
         font=FONT_UI, **({'width': width} if width else {}), **kw,
     )
-
-
-class _Card(tk.Frame):
-    """카드 컨테이너 (테두리 1px)."""
-    def __init__(self, parent, **kw):
-        super().__init__(parent, bg=C_BORDER, bd=0, **kw)
-        self._inner = tk.Frame(self, bg=C_SURFACE)
-        self._inner.pack(fill='both', expand=True, padx=1, pady=1)
-
-    @property
-    def inner(self):
-        return self._inner
 
 
 class StatCard(tk.Frame):
@@ -430,10 +427,18 @@ class DetectionGui(tk.Tk):
         self._log.tag_configure('accent',  foreground=C_ACCENT_H)
 
     # ══════════════════════════════════════════════════════════════
-    #  장치 탐색
+    #  장치 탐색 (백그라운드 스레드로 실행 — GUI 블로킹 방지)
     # ══════════════════════════════════════════════════════════════
 
     def _load_devices(self):
+        """GPU 목록 탐색을 백그라운드 스레드에서 실행합니다."""
+        self._device_combo.configure(values=['탐색 중…'], state='disabled')
+        self.v_device.set('탐색 중…')
+        t = threading.Thread(target=self._scan_devices, daemon=True)
+        t.start()
+
+    def _scan_devices(self):
+        """실제 장치 탐색 (worker thread)."""
         opts = {'자동(GPU 우선, 실패 시 CPU)': '', 'CPU': 'cpu'}
         try:
             import torch
@@ -446,13 +451,20 @@ class DetectionGui(tk.Tk):
                         torch.cuda.synchronize(idx)
                         opts[f'GPU {idx}: {name}'] = str(idx)
                     except Exception as exc:
-                        self._log_gui(f'GPU {idx} 사용 불가 ({name}): {exc}\n', 'warn')
+                        self.log_queue.put(('__LOG__',
+                            f'WARNING: GPU {idx} 사용 불가 ({name}): {exc}\n'))
         except Exception as exc:
-            self._log_gui(f'device 조회 실패: {exc}\n', 'warn')
+            self.log_queue.put(('__LOG__', f'WARNING: device 조회 실패: {exc}\n'))
 
+        # UI 업데이트는 메인 스레드 스케줄러에 위임
+        self.after(0, self._apply_devices, opts)
+
+    def _apply_devices(self, opts: dict):
+        """탐색 결과를 UI에 반영합니다 (메인 스레드)."""
         self.device_values = opts
-        self._device_combo.configure(values=list(opts.keys()))
-        if self.v_device.get() not in opts:
+        self._device_combo.configure(values=list(opts.keys()), state='readonly')
+        current = self.v_device.get()
+        if current not in opts:
             self.v_device.set('자동(GPU 우선, 실패 시 CPU)')
 
     # ══════════════════════════════════════════════════════════════

@@ -15,6 +15,7 @@ from pathlib import Path
 import logging
 import sys
 import hashlib
+import traceback
 import cv2
 import torch
 import numpy as np
@@ -305,13 +306,31 @@ class UnicodeSafeLoadImagestxt(LoadImagestxt):
 # ══════════════════════════════════════════════════════════════════
 
 def setup_logging(log_level=logging.INFO):
-    """로깅 설정."""
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler()]
-    )
-    return logging.getLogger(__name__)
+    """
+    로깅 설정.
+    호출할 때마다 핸들러를 새로 구성합니다.
+    GUI에서 여러 번 detect()를 실행해도 핸들러가 누적되지 않습니다.
+    """
+    logger = logging.getLogger(__name__)
+    logger.setLevel(log_level)
+
+    # 이전에 추가된 핸들러 모두 제거 (중복 누적 방지)
+    for handler in logger.handlers[:]:
+        try:
+            handler.close()
+        except Exception:
+            pass
+        logger.removeHandler(handler)
+
+    # StreamHandler 새로 추가
+    sh = logging.StreamHandler()
+    sh.setLevel(log_level)
+    sh.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    logger.addHandler(sh)
+
+    # root logger 전파 방지 (중복 출력 억제)
+    logger.propagate = False
+    return logger
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -619,20 +638,72 @@ def evaluate_detections(pred, gt_boxes, im0s, img, gn, names, conf_thres, iou_th
 
 
 # ══════════════════════════════════════════════════════════════════
+#  라벨 경로 탐색
+# ══════════════════════════════════════════════════════════════════
+
+def _find_label_path(image_path: Path):
+    """
+    이미지 경로에 대응하는 GT 라벨 파일(.txt) 경로를 탐색합니다.
+
+    탐색 전략 (순서대로 시도):
+    1. 이미지와 같은 디렉터리의 .txt
+    2. 이미지 경로의 'JPEGImages' 부분을 'labels'로 교체 (대소문자 무시)
+    3. 부모 폴더에 labels/ 서브폴더가 있으면 그 안의 .txt
+    """
+    stem = image_path.stem
+
+    # 1) 같은 디렉터리
+    candidate = image_path.with_suffix('.txt')
+    if candidate.exists():
+        return candidate
+
+    # 2) 경로 문자열에서 JPEGImages → labels 교체 (대소문자 무시)
+    parts = image_path.parts
+    for i, part in enumerate(parts):
+        if part.lower() == 'jpegimages':
+            new_parts = parts[:i] + ('labels',) + parts[i+1:]
+            candidate = Path(*new_parts).with_suffix('.txt')
+            if candidate.exists():
+                return candidate
+            break
+
+    # 3) 부모 디렉터리의 labels/ 서브폴더
+    labels_dir = image_path.parent.parent / 'labels'
+    candidate = labels_dir / (stem + '.txt')
+    if candidate.exists():
+        return candidate
+
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════
 #  결과 저장
 # ══════════════════════════════════════════════════════════════════
 
 def save_results(result, path, target_dir, label_path=None):
     """이미지와 라벨을 GOOD / MISS / FAIL 폴더에 복사합니다."""
+    logger = logging.getLogger(__name__)
     p = Path(path)
     target_img_path = target_dir / 'JPEGImages' / p.name
     os.makedirs(target_img_path.parent, exist_ok=True)
-    shutil.copy(str(path), str(target_img_path))
 
-    if label_path and os.path.exists(label_path):
+    # Unicode 경로 안전 복사
+    try:
+        img_data = np.fromfile(str(path), dtype=np.uint8)
+        img_data.tofile(str(target_img_path))
+    except Exception:
+        try:
+            shutil.copy(str(path), str(target_img_path))
+        except Exception as e:
+            logger.error(f"Failed to copy image {path}: {e}")
+
+    if label_path and os.path.exists(str(label_path)):
         target_label_path = target_dir / 'labels' / (p.stem + '.txt')
         os.makedirs(target_label_path.parent, exist_ok=True)
-        shutil.copy(label_path, str(target_label_path))
+        try:
+            shutil.copy(str(label_path), str(target_label_path))
+        except Exception as e:
+            logger.error(f"Failed to copy label {label_path}: {e}")
 
     return target_img_path
 
@@ -914,13 +985,12 @@ def detect(opt, stop_event=None, progress_callback=None):
 
             # ── GT 라벨 로드 ──────────────────────────────────
             image_path = Path(path)
-            label_path = str(image_path.with_suffix('.txt')).replace('JPEGImages', 'labels')
-            if not os.path.exists(label_path):
-                # [FIX] 원래 코드의 no-op replace(.txt→.txt) 제거
-                logger.warning(f"Label not found: {label_path}")
+            label_path = _find_label_path(image_path)
+            if label_path is None:
+                logger.warning(f"Label not found: {image_path.with_suffix('.txt')}")
                 gt_boxes = []
             else:
-                gt_boxes = read_label_file(label_path)
+                gt_boxes = read_label_file(str(label_path))
 
             # ── 추론 (CUDA 실패 시 CPU 재시도) ────────────────
             try:
@@ -978,7 +1048,8 @@ def detect(opt, stop_event=None, progress_callback=None):
 
             # ── 결과 저장 ──────────────────────────────────────
             if not opt.nosave:
-                save_results(result, path, result_dirs[group_name], label_path)
+                save_results(result, path, result_dirs[group_name],
+                             str(label_path) if label_path else None)
 
             # ── 디버그 이미지 ──────────────────────────────────
             if opt.save_debug_images and result['visualization'] is not None:
@@ -1004,8 +1075,7 @@ def detect(opt, stop_event=None, progress_callback=None):
 
         except Exception as e:
             logger.error(f"Error processing {path or idx}: {e}")
-            import traceback as _tb
-            logger.error(_tb.format_exc())
+            logger.error(traceback.format_exc())
 
         # ── progress callback (항상 호출) ────────────────────────
         if progress_callback:
