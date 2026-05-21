@@ -1,6 +1,22 @@
+"""
+detect_label_22_gui.py  —  YOLOv7 Detection Evaluation  GUI  v1.0.0
+=====================================================================
+• 모던 다크 테마 (GitHub Dark 스타일)
+• 실시간 GOOD / MISS / FAIL 통계 카드
+• 커스텀 진행 바 + ETA 표시
+• 컬러 코딩 로그 (INFO / WARNING / ERROR)
+• HTML 리포트 / 결과 폴더 바로 열기
+• GPU / CPU 자동 선택 (smoke test 포함)
+• 백그라운드 스레드로 UI 응답성 유지
+"""
+
 import argparse
 import contextlib
+import datetime
+import os
+import platform
 import queue
+import subprocess
 import sys
 import threading
 import traceback
@@ -8,318 +24,741 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+APP_VERSION = '1.0.0'
+
+# ── 색상 팔레트 (GitHub Dark 계열) ────────────────────────────────
+C_BG        = '#0d1117'   # 메인 배경
+C_SURFACE   = '#161b22'   # 카드 / 패널
+C_SURFACE2  = '#21262d'   # 입력 필드 배경
+C_BORDER    = '#30363d'   # 테두리
+C_ACCENT    = '#388bfd'   # 파란 강조 (실행 버튼)
+C_ACCENT_H  = '#58a6ff'   # hover 시 밝은 파랑
+C_TEXT      = '#e6edf3'   # 기본 텍스트
+C_TEXT_DIM  = '#8b949e'   # 보조 텍스트
+C_SUCCESS   = '#3fb950'   # GOOD  (초록)
+C_WARNING   = '#d29922'   # MISS  (황금)
+C_DANGER    = '#f85149'   # FAIL  (빨강)
+C_BTN       = '#21262d'   # 일반 버튼 배경
+C_BTN_H     = '#30363d'   # 일반 버튼 hover
+C_STOP_BG   = '#3a1a1a'   # 중지 버튼 배경
+C_STOP_H    = '#5a2a2a'   # 중지 버튼 hover
+
+# ── 폰트 ────────────────────────────────────────────────────────
+_WIN = platform.system() == 'Windows'
+FF       = 'Segoe UI'    if _WIN else 'Helvetica'
+FF_MONO  = 'Consolas'    if _WIN else 'Courier New'
+
+FONT_UI   = (FF, 9)
+FONT_BOLD = (FF, 9, 'bold')
+FONT_SM   = (FF, 8)
+FONT_LG   = (FF, 11)
+FONT_TITL = (FF, 13, 'bold')
+FONT_NUM  = (FF, 28, 'bold')
+FONT_MONO = (FF_MONO, 8)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  헬퍼 위젯
+# ══════════════════════════════════════════════════════════════════
+
+def _btn(parent, text, command, bg=C_BTN, fg=C_TEXT, hover=C_BTN_H, **kw):
+    """평평한 커스텀 버튼."""
+    b = tk.Button(
+        parent, text=text, command=command,
+        bg=bg, fg=fg,
+        activebackground=hover, activeforeground=fg,
+        relief='flat', bd=0, padx=14, pady=7,
+        cursor='hand2', font=FONT_UI, **kw,
+    )
+    b.bind('<Enter>', lambda _: b.configure(bg=hover))
+    b.bind('<Leave>', lambda _: b.configure(bg=bg))
+    return b
+
+
+def _lbl(parent, text='', fg=C_TEXT, font=FONT_UI, bg=None, **kw):
+    return tk.Label(parent, text=text, fg=fg, font=font,
+                    bg=bg if bg else C_BG, **kw)
+
+
+def _entry(parent, textvariable, width=None, **kw):
+    return tk.Entry(
+        parent, textvariable=textvariable,
+        bg=C_SURFACE2, fg=C_TEXT, insertbackground=C_TEXT,
+        relief='flat', bd=0,
+        highlightbackground=C_BORDER, highlightthickness=1,
+        font=FONT_UI, **({'width': width} if width else {}), **kw,
+    )
+
+
+class _Card(tk.Frame):
+    """카드 컨테이너 (테두리 1px)."""
+    def __init__(self, parent, **kw):
+        super().__init__(parent, bg=C_BORDER, bd=0, **kw)
+        self._inner = tk.Frame(self, bg=C_SURFACE)
+        self._inner.pack(fill='both', expand=True, padx=1, pady=1)
+
+    @property
+    def inner(self):
+        return self._inner
+
+
+class StatCard(tk.Frame):
+    """GOOD / MISS / FAIL / 합계 실시간 통계 카드."""
+
+    def __init__(self, parent, title, color, **kw):
+        super().__init__(parent, bg=C_BORDER, **kw)
+        inner = tk.Frame(self, bg=C_SURFACE)
+        inner.pack(fill='both', expand=True, padx=1, pady=1)
+
+        self._count_var = tk.StringVar(value='0')
+        self._pct_var   = tk.StringVar(value='0.0%')
+
+        tk.Label(inner, text=title, bg=C_SURFACE, fg=color,
+                 font=(FF, 8, 'bold')).pack(pady=(10, 2))
+        tk.Label(inner, textvariable=self._count_var, bg=C_SURFACE, fg=C_TEXT,
+                 font=FONT_NUM).pack()
+        tk.Label(inner, textvariable=self._pct_var, bg=C_SURFACE, fg=C_TEXT_DIM,
+                 font=FONT_SM).pack(pady=(2, 10))
+
+    def update(self, count, total):
+        self._count_var.set(str(count))
+        pct = count / total * 100 if total else 0.0
+        self._pct_var.set(f'{pct:.1f}%')
+
+
+class ProgressBar(tk.Canvas):
+    """커스텀 슬림 진행 바."""
+    H = 6
+
+    def __init__(self, parent, color=C_ACCENT, **kw):
+        super().__init__(parent, height=self.H, bg=C_SURFACE2,
+                         highlightthickness=0, bd=0, **kw)
+        self._color = color
+        self._rect  = self.create_rectangle(0, 0, 0, self.H, fill=color, outline='')
+
+    def set(self, ratio: float):
+        ratio = max(0.0, min(1.0, ratio))
+        w = self.winfo_width() or 1
+        self.coords(self._rect, 0, 0, w * ratio, self.H)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  큐 라이터  (worker → GUI)
+# ══════════════════════════════════════════════════════════════════
 
 class QueueWriter:
-    """worker thread의 stdout/stderr를 GUI 로그 창으로 전달합니다."""
+    """worker thread의 print / logging 출력을 GUI 로그로 전달합니다."""
 
     def __init__(self, log_queue):
-        self.log_queue = log_queue
+        self.q = log_queue
 
     def write(self, text):
         if text:
-            self.log_queue.put(text)
+            self.q.put(('__LOG__', text))
 
     def flush(self):
-        return None
+        pass
 
+
+# ══════════════════════════════════════════════════════════════════
+#  메인 GUI
+# ══════════════════════════════════════════════════════════════════
 
 class DetectionGui(tk.Tk):
+
+    # ── 초기화 ──────────────────────────────────────────────────
     def __init__(self):
         super().__init__()
-        self.title("Detect Label 22")
-        self.geometry("980x720")
-        self.minsize(860, 640)
+        self.title(f'Detect Label 22    v{APP_VERSION}')
+        self.geometry('1000x820')
+        self.minsize(860, 700)
+        self.configure(bg=C_BG)
 
-        self.log_queue = queue.Queue()
-        self.worker = None
-        self.stop_event = threading.Event()
-        self.device_values = {}
+        self.log_queue      = queue.Queue()
+        self.worker         = None
+        self.stop_event     = threading.Event()
+        self.device_values  = {}
+        self._save_dir      = None
+        self._report_path   = None
+        self._start_time    = None
 
-        self._build_variables()
-        self._build_layout()
+        self._build_vars()
+        self._build_ui()
         self._load_devices()
-        self.after(100, self._drain_log_queue)
+        self.after(100, self._drain_queue)
 
-    def _build_variables(self):
-        self.source_var = tk.StringVar()
-        self.weights_var = tk.StringVar()
-        self.savedirs_var = tk.StringVar(value=str(Path("outputs") / "sorted"))
-        self.project_var = tk.StringVar(value=str(Path("runs") / "detect"))
-        self.name_var = tk.StringVar(value="exp")
-        self.img_size_var = tk.StringVar(value="1280")
-        self.conf_thres_var = tk.StringVar(value="0.25")
-        self.iou_thres_var = tk.StringVar(value="0.45")
-        self.min_recall_var = tk.StringVar(value="0.8")
-        self.classes_var = tk.StringVar(value="0,1,3,4")
-        self.device_var = tk.StringVar(value="자동(GPU 우선, 실패 시 CPU)")
-        self.view_img_var = tk.BooleanVar(value=False)
-        self.save_debug_var = tk.BooleanVar(value=False)
-        self.exist_ok_var = tk.BooleanVar(value=False)
-        self.no_trace_var = tk.BooleanVar(value=False)
-        self.status_var = tk.StringVar(value="대기 중")
+    # ── tkinter 변수 ────────────────────────────────────────────
+    def _build_vars(self):
+        self.v_source    = tk.StringVar()
+        self.v_weights   = tk.StringVar()
+        self.v_savedirs  = tk.StringVar(value=str(Path('outputs') / 'sorted'))
+        self.v_project   = tk.StringVar(value=str(Path('runs') / 'detect'))
+        self.v_name      = tk.StringVar(value='exp')
+        self.v_imgsize   = tk.StringVar(value='1280')
+        self.v_conf      = tk.StringVar(value='0.25')
+        self.v_iou       = tk.StringVar(value='0.45')
+        self.v_recall    = tk.StringVar(value='0.8')
+        self.v_classes   = tk.StringVar(value='0,1,3,4')
+        self.v_device    = tk.StringVar(value='자동(GPU 우선, 실패 시 CPU)')
+        self.v_debug     = tk.BooleanVar(value=False)
+        self.v_viewimg   = tk.BooleanVar(value=False)
+        self.v_existok   = tk.BooleanVar(value=False)
+        self.v_notrace   = tk.BooleanVar(value=False)
+        self.v_status    = tk.StringVar(value='대기 중')
+        self.v_progress  = tk.StringVar(value='')
+        self.v_elapsed   = tk.StringVar(value='')
+        self.v_eta       = tk.StringVar(value='')
 
-    def _build_layout(self):
-        container = ttk.Frame(self, padding=16)
-        container.pack(fill=tk.BOTH, expand=True)
+    # ══════════════════════════════════════════════════════════════
+    #  UI 빌드
+    # ══════════════════════════════════════════════════════════════
 
-        container.columnconfigure(0, weight=0)
-        container.columnconfigure(1, weight=1)
-        container.columnconfigure(2, weight=0)
+    def _build_ui(self):
+        # ── 헤더 ─────────────────────────────────────────────────
+        hdr = tk.Frame(self, bg=C_SURFACE, pady=14, padx=20)
+        hdr.pack(fill='x')
+        tk.Label(hdr, text='🔍  Detect Label 22', bg=C_SURFACE,
+                 fg=C_TEXT, font=FONT_TITL).pack(side='left')
+        tk.Label(hdr, text=f'v{APP_VERSION}', bg=C_SURFACE,
+                 fg=C_TEXT_DIM, font=FONT_SM).pack(side='left', padx=(8, 0), anchor='s', pady=(0,2))
 
-        row = 0
-        row = self._add_source_row(container, row)
-        row = self._add_file_row(container, row, "weights pt", self.weights_var, [("PyTorch weights", "*.pt"), ("All files", "*.*")])
-        row = self._add_dir_row(container, row, "savedirs", self.savedirs_var)
-        row = self._add_dir_row(container, row, "project", self.project_var)
-        row = self._add_entry_row(container, row, "name", self.name_var)
+        # ── 스크롤 영역 ──────────────────────────────────────────
+        main = tk.Frame(self, bg=C_BG, padx=16, pady=12)
+        main.pack(fill='both', expand=True)
 
-        numeric_frame = ttk.Frame(container)
-        numeric_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(8, 0))
-        for col in range(8):
-            numeric_frame.columnconfigure(col, weight=1)
+        # 설정
+        self._build_settings(_card_frame(main, '⚙  설정'))
+        tk.Frame(main, bg=C_BG, height=10).pack(fill='x')
 
-        self._add_compact_entry(numeric_frame, 0, "img-size", self.img_size_var)
-        self._add_compact_entry(numeric_frame, 2, "conf-thres", self.conf_thres_var)
-        self._add_compact_entry(numeric_frame, 4, "iou-thres", self.iou_thres_var)
-        self._add_compact_entry(numeric_frame, 6, "min-recall", self.min_recall_var)
-        row += 1
+        # 액션 + 진행
+        self._build_action(main)
+        tk.Frame(main, bg=C_BG, height=8).pack(fill='x')
 
-        ttk.Label(container, text="classes").grid(row=row, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(container, textvariable=self.classes_var).grid(row=row, column=1, sticky="ew", pady=(8, 0), padx=(8, 8))
-        ttk.Label(container, text="예: 0,1,3,4 / 비우면 전체 class").grid(row=row, column=2, sticky="w", pady=(8, 0))
-        row += 1
+        # 통계 카드
+        self._build_stat_cards(main)
+        tk.Frame(main, bg=C_BG, height=8).pack(fill='x')
 
-        ttk.Label(container, text="device").grid(row=row, column=0, sticky="w", pady=(8, 0))
-        self.device_combo = ttk.Combobox(container, textvariable=self.device_var, state="readonly")
-        self.device_combo.grid(row=row, column=1, sticky="ew", pady=(8, 0), padx=(8, 8))
-        ttk.Button(container, text="새로고침", command=self._load_devices).grid(row=row, column=2, sticky="ew", pady=(8, 0))
-        row += 1
+        # 로그
+        self._build_log(_card_frame(main, '📋  실행 로그', expand=True))
 
-        options_frame = ttk.Frame(container)
-        options_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 0))
-        ttk.Checkbutton(options_frame, text="view image", variable=self.view_img_var).pack(side=tk.LEFT)
-        ttk.Checkbutton(options_frame, text="save debug images", variable=self.save_debug_var).pack(side=tk.LEFT, padx=(14, 0))
-        ttk.Checkbutton(options_frame, text="exist ok", variable=self.exist_ok_var).pack(side=tk.LEFT, padx=(14, 0))
-        ttk.Checkbutton(options_frame, text="no trace", variable=self.no_trace_var).pack(side=tk.LEFT, padx=(14, 0))
-        row += 1
+    # ── 설정 패널 ────────────────────────────────────────────────
+    def _build_settings(self, card):
+        body = tk.Frame(card, bg=C_SURFACE, padx=14, pady=10)
+        body.pack(fill='x')
+        body.columnconfigure(1, weight=1)
 
-        action_frame = ttk.Frame(container)
-        action_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(14, 0))
-        action_frame.columnconfigure(0, weight=1)
-        action_frame.columnconfigure(1, weight=1)
-        action_frame.columnconfigure(2, weight=4)
-        self.start_button = ttk.Button(action_frame, text="실행", command=self._start_detection)
-        self.start_button.grid(row=0, column=0, sticky="w")
-        self.stop_button = ttk.Button(action_frame, text="중지", command=self._stop_detection, state=tk.DISABLED)
-        self.stop_button.grid(row=0, column=1, sticky="w", padx=(8, 0))
-        ttk.Label(action_frame, textvariable=self.status_var).grid(row=0, column=2, sticky="e")
-        row += 1
+        r = 0
+        # source (txt / 폴더 2개 버튼)
+        _lbl(body, 'source', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE,
+             width=9, anchor='w').grid(row=r, column=0, sticky='w', pady=3)
+        _entry(body, self.v_source).grid(row=r, column=1, sticky='ew', padx=(8,6), pady=3)
+        bf = tk.Frame(body, bg=C_SURFACE)
+        bf.grid(row=r, column=2, sticky='ew', pady=3)
+        _btn(bf, 'txt', lambda: self._browse_file(
+             self.v_source, [('Text', '*.txt'), ('All', '*.*')])).pack(side='left')
+        _btn(bf, '폴더', lambda: self._browse_dir(self.v_source)).pack(side='left', padx=(4,0))
+        r += 1
 
-        ttk.Label(container, text="실행 로그").grid(row=row, column=0, columnspan=3, sticky="w", pady=(14, 0))
-        row += 1
+        # weights
+        self._row_file(body, r, 'weights', self.v_weights,
+                       [('PyTorch weights', '*.pt'), ('All', '*.*')]); r += 1
 
-        log_frame = ttk.Frame(container)
-        log_frame.grid(row=row, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
-        container.rowconfigure(row, weight=1)
-        log_frame.rowconfigure(0, weight=1)
-        log_frame.columnconfigure(0, weight=1)
+        # savedirs
+        self._row_dir(body, r, 'savedirs', self.v_savedirs); r += 1
 
-        self.log_text = tk.Text(log_frame, wrap="word", height=18)
-        self.log_text.grid(row=0, column=0, sticky="nsew")
-        scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        self.log_text.configure(yscrollcommand=scrollbar.set)
+        # project + name
+        pn = tk.Frame(body, bg=C_SURFACE)
+        pn.grid(row=r, column=0, columnspan=3, sticky='ew', pady=(4, 0))
+        _lbl(pn, 'project', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE,
+             width=9, anchor='w').pack(side='left')
+        _entry(pn, self.v_project).pack(side='left', fill='x', expand=True, padx=(8,8))
+        _lbl(pn, 'name', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE,
+             width=5, anchor='w').pack(side='left')
+        _entry(pn, self.v_name, width=16).pack(side='left', padx=(4, 0))
+        r += 1
 
-    def _add_file_row(self, parent, row, label, variable, filetypes):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=(0, 6))
-        ttk.Entry(parent, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=(8, 8), pady=(0, 6))
-        ttk.Button(parent, text="찾기", command=lambda: self._browse_file(variable, filetypes)).grid(row=row, column=2, sticky="ew", pady=(0, 6))
-        return row + 1
+        # 수치 파라미터
+        num = tk.Frame(body, bg=C_SURFACE)
+        num.grid(row=r, column=0, columnspan=3, sticky='ew', pady=(8, 0))
+        for col, (lbl, var) in enumerate([
+            ('img-size',  self.v_imgsize),
+            ('conf-thres',self.v_conf),
+            ('iou-thres', self.v_iou),
+            ('min-recall',self.v_recall),
+        ]):
+            pad = (16 if col else 0, 0)
+            _lbl(num, lbl, fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE).grid(
+                row=0, column=col*2, sticky='w', padx=(pad[0], 0))
+            _entry(num, var, width=9).grid(
+                row=0, column=col*2+1, sticky='ew', padx=(4, 0))
+        r += 1
 
-    def _add_source_row(self, parent, row):
-        ttk.Label(parent, text="source").grid(row=row, column=0, sticky="w", pady=(0, 6))
-        ttk.Entry(parent, textvariable=self.source_var).grid(row=row, column=1, sticky="ew", padx=(8, 8), pady=(0, 6))
-        button_frame = ttk.Frame(parent)
-        button_frame.grid(row=row, column=2, sticky="ew", pady=(0, 6))
-        ttk.Button(
-            button_frame,
-            text="txt",
-            command=lambda: self._browse_file(self.source_var, [("Text files", "*.txt"), ("All files", "*.*")]),
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(button_frame, text="폴더", command=lambda: self._browse_dir(self.source_var)).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
-        return row + 1
+        # classes + device
+        cd = tk.Frame(body, bg=C_SURFACE)
+        cd.grid(row=r, column=0, columnspan=3, sticky='ew', pady=(8, 0))
+        _lbl(cd, 'classes', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE).pack(side='left')
+        _entry(cd, self.v_classes, width=18).pack(side='left', padx=(4, 20))
+        _lbl(cd, 'device', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE).pack(side='left')
+        self._device_combo = ttk.Combobox(cd, textvariable=self.v_device,
+                                          state='readonly', width=30)
+        self._device_combo.pack(side='left', padx=(4, 6))
+        _btn(cd, '↺', self._load_devices, bg=C_BTN).pack(side='left')
+        r += 1
 
-    def _add_dir_row(self, parent, row, label, variable):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=(0, 6))
-        ttk.Entry(parent, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=(8, 8), pady=(0, 6))
-        ttk.Button(parent, text="찾기", command=lambda: self._browse_dir(variable)).grid(row=row, column=2, sticky="ew", pady=(0, 6))
-        return row + 1
+        # 체크박스
+        chk = tk.Frame(body, bg=C_SURFACE)
+        chk.grid(row=r, column=0, columnspan=3, sticky='ew', pady=(8, 4))
+        for text, var in [
+            ('debug 이미지 저장', self.v_debug),
+            ('결과 화면 표시',    self.v_viewimg),
+            ('exist ok',         self.v_existok),
+            ('no trace',         self.v_notrace),
+        ]:
+            tk.Checkbutton(
+                chk, text=text, variable=var,
+                bg=C_SURFACE, fg=C_TEXT, selectcolor=C_SURFACE2,
+                activebackground=C_SURFACE, activeforeground=C_TEXT,
+                font=FONT_SM, bd=0,
+            ).pack(side='left', padx=(0, 16))
 
-    def _add_entry_row(self, parent, row, label, variable):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=(0, 6))
-        ttk.Entry(parent, textvariable=variable).grid(row=row, column=1, sticky="ew", padx=(8, 8), pady=(0, 6))
-        return row + 1
+    def _row_file(self, parent, row, label, var, ftypes):
+        _lbl(parent, label, fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE,
+             width=9, anchor='w').grid(row=row, column=0, sticky='w', pady=3)
+        _entry(parent, var).grid(row=row, column=1, sticky='ew', padx=(8,6), pady=3)
+        _btn(parent, '찾기', lambda: self._browse_file(var, ftypes)).grid(
+            row=row, column=2, sticky='ew', pady=3)
 
-    def _add_compact_entry(self, parent, col, label, variable):
-        ttk.Label(parent, text=label).grid(row=0, column=col, sticky="w")
-        ttk.Entry(parent, textvariable=variable, width=12).grid(row=0, column=col + 1, sticky="ew", padx=(6, 12))
+    def _row_dir(self, parent, row, label, var):
+        _lbl(parent, label, fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE,
+             width=9, anchor='w').grid(row=row, column=0, sticky='w', pady=3)
+        _entry(parent, var).grid(row=row, column=1, sticky='ew', padx=(8,6), pady=3)
+        _btn(parent, '찾기', lambda: self._browse_dir(var)).grid(
+            row=row, column=2, sticky='ew', pady=3)
 
-    def _browse_file(self, variable, filetypes):
-        selected = filedialog.askopenfilename(filetypes=filetypes)
-        if selected:
-            variable.set(selected)
+    # ── 액션 바 + 진행 바 ────────────────────────────────────────
+    def _build_action(self, parent):
+        frame = tk.Frame(parent, bg=C_BG)
+        frame.pack(fill='x')
 
-    def _browse_dir(self, variable):
-        selected = filedialog.askdirectory()
-        if selected:
-            variable.set(selected)
+        # 버튼 영역
+        btns = tk.Frame(frame, bg=C_BG)
+        btns.pack(side='left')
+
+        self._btn_start = _btn(btns, '▶  실행', self._start,
+                                bg=C_ACCENT, fg='#ffffff', hover=C_ACCENT_H)
+        self._btn_start.pack(side='left', padx=(0, 8))
+
+        self._btn_stop = _btn(btns, '■  중지', self._stop,
+                               bg=C_STOP_BG, fg=C_DANGER, hover=C_STOP_H)
+        self._btn_stop.configure(state='disabled')
+        self._btn_stop.pack(side='left')
+
+        # 상태 / 시간
+        right = tk.Frame(frame, bg=C_BG)
+        right.pack(side='right')
+        tk.Label(right, textvariable=self.v_elapsed,
+                 bg=C_BG, fg=C_TEXT_DIM, font=FONT_SM).pack(side='right', padx=(6,0))
+        tk.Label(right, textvariable=self.v_status,
+                 bg=C_BG, fg=C_TEXT, font=FONT_UI).pack(side='right')
+
+        # 진행 바
+        pb_wrap = tk.Frame(parent, bg=C_BG)
+        pb_wrap.pack(fill='x', pady=(8, 0))
+
+        self._pb = ProgressBar(pb_wrap, color=C_ACCENT)
+        self._pb.pack(fill='x', pady=(0, 4))
+
+        pb_txt = tk.Frame(pb_wrap, bg=C_BG)
+        pb_txt.pack(fill='x')
+        tk.Label(pb_txt, textvariable=self.v_progress,
+                 bg=C_BG, fg=C_TEXT_DIM, font=FONT_SM).pack(side='left')
+        tk.Label(pb_txt, textvariable=self.v_eta,
+                 bg=C_BG, fg=C_TEXT_DIM, font=FONT_SM).pack(side='right')
+
+    # ── 통계 카드 ────────────────────────────────────────────────
+    def _build_stat_cards(self, parent):
+        frame = tk.Frame(parent, bg=C_BG)
+        frame.pack(fill='x')
+        frame.columnconfigure((0,1,2,3), weight=1)
+
+        self._card_good  = StatCard(frame, 'GOOD',  C_SUCCESS)
+        self._card_miss  = StatCard(frame, 'MISS',  C_WARNING)
+        self._card_fail  = StatCard(frame, 'FAIL',  C_DANGER)
+        self._card_total = StatCard(frame, '처리 수', C_TEXT_DIM)
+        for col, card in enumerate((self._card_good, self._card_miss,
+                                     self._card_fail, self._card_total)):
+            card.grid(row=0, column=col, sticky='nsew',
+                      padx=(0 if col == 0 else 8, 0))
+
+    # ── 로그 패널 ────────────────────────────────────────────────
+    def _build_log(self, card):
+        # 버튼 행
+        btn_row = tk.Frame(card, bg=C_SURFACE, padx=14, pady=6)
+        btn_row.pack(fill='x')
+        _btn(btn_row, '📊 리포트 열기', self._open_report,
+             bg=C_BTN, fg=C_TEXT_DIM).pack(side='right', padx=(4,0))
+        _btn(btn_row, '📂 결과 폴더', self._open_folder,
+             bg=C_BTN, fg=C_TEXT_DIM).pack(side='right', padx=(4,0))
+        _btn(btn_row, '🗑 지우기', self._clear_log,
+             bg=C_BTN, fg=C_TEXT_DIM).pack(side='right')
+
+        # 구분선
+        tk.Frame(card, bg=C_BORDER, height=1).pack(fill='x')
+
+        # 텍스트 영역
+        log_wrap = tk.Frame(card, bg=C_SURFACE, padx=14, pady=10)
+        log_wrap.pack(fill='both', expand=True)
+        log_wrap.rowconfigure(0, weight=1)
+        log_wrap.columnconfigure(0, weight=1)
+
+        self._log = tk.Text(
+            log_wrap, wrap='word', height=12,
+            bg=C_BG, fg=C_TEXT, insertbackground=C_TEXT,
+            font=FONT_MONO, relief='flat', bd=0, state='disabled',
+        )
+        self._log.grid(row=0, column=0, sticky='nsew')
+        sb = ttk.Scrollbar(log_wrap, orient='vertical', command=self._log.yview)
+        sb.grid(row=0, column=1, sticky='ns')
+        self._log.configure(yscrollcommand=sb.set)
+
+        # 텍스트 컬러 태그
+        self._log.tag_configure('info',    foreground=C_TEXT)
+        self._log.tag_configure('warn',    foreground=C_WARNING)
+        self._log.tag_configure('error',   foreground=C_DANGER)
+        self._log.tag_configure('success', foreground=C_SUCCESS)
+        self._log.tag_configure('dim',     foreground=C_TEXT_DIM)
+        self._log.tag_configure('accent',  foreground=C_ACCENT_H)
+
+    # ══════════════════════════════════════════════════════════════
+    #  장치 탐색
+    # ══════════════════════════════════════════════════════════════
 
     def _load_devices(self):
-        options = {"자동(GPU 우선, 실패 시 CPU)": "", "CPU": "cpu"}
+        opts = {'자동(GPU 우선, 실패 시 CPU)': '', 'CPU': 'cpu'}
         try:
             import torch
-
             if torch.cuda.is_available():
                 for idx in range(torch.cuda.device_count()):
                     name = torch.cuda.get_device_name(idx)
                     try:
-                        x = torch.ones((1,), device=f"cuda:{idx}")
+                        x = torch.ones((1,), device=f'cuda:{idx}')
                         _ = (x + 1).sum().item()
                         torch.cuda.synchronize(idx)
-                        options[f"GPU {idx}: {name}"] = str(idx)
+                        opts[f'GPU {idx}: {name}'] = str(idx)
                     except Exception as exc:
-                        self._append_log(f"GPU {idx} 사용 불가, CPU fallback 대상: {name} / {exc}\n")
+                        self._log_gui(f'GPU {idx} 사용 불가 ({name}): {exc}\n', 'warn')
         except Exception as exc:
-            self._append_log(f"device 조회 실패: {exc}\n")
+            self._log_gui(f'device 조회 실패: {exc}\n', 'warn')
 
-        self.device_values = options
-        self.device_combo.configure(values=list(options.keys()))
-        if self.device_var.get() not in options:
-            self.device_var.set("자동(GPU 우선, 실패 시 CPU)")
+        self.device_values = opts
+        self._device_combo.configure(values=list(opts.keys()))
+        if self.v_device.get() not in opts:
+            self.v_device.set('자동(GPU 우선, 실패 시 CPU)')
+
+    # ══════════════════════════════════════════════════════════════
+    #  파일 / 폴더 선택
+    # ══════════════════════════════════════════════════════════════
+
+    def _browse_file(self, var, ftypes):
+        p = filedialog.askopenfilename(filetypes=ftypes)
+        if p:
+            var.set(p)
+
+    def _browse_dir(self, var):
+        p = filedialog.askdirectory()
+        if p:
+            var.set(p)
+
+    # ══════════════════════════════════════════════════════════════
+    #  옵션 빌드 및 검증
+    # ══════════════════════════════════════════════════════════════
 
     def _parse_classes(self):
-        raw = self.classes_var.get().strip()
+        raw = self.v_classes.get().strip()
         if not raw:
             return None
-        tokens = raw.replace(",", " ").split()
+        tokens = raw.replace(',', ' ').split()
         try:
-            return [int(token) for token in tokens]
-        except ValueError as exc:
-            raise ValueError("classes는 쉼표 또는 공백으로 구분된 정수여야 합니다.") from exc
+            return [int(t) for t in tokens]
+        except ValueError:
+            raise ValueError('classes는 쉼표/공백으로 구분된 정수여야 합니다. 예: 0,1,3,4')
 
-    def _build_options(self):
-        source_text = self.source_var.get().strip()
-        weights_text = self.weights_var.get().strip()
-        savedirs = self.savedirs_var.get().strip()
-        project = self.project_var.get().strip()
-        name = self.name_var.get().strip()
+    def _build_opt(self):
+        src  = self.v_source.get().strip()
+        wt   = self.v_weights.get().strip()
+        sd   = self.v_savedirs.get().strip()
+        proj = self.v_project.get().strip()
+        name = self.v_name.get().strip()
 
-        if not source_text:
-            raise ValueError("source를 입력해 주세요.")
-        if not weights_text:
-            raise ValueError("weights pt 파일을 입력해 주세요.")
+        if not src:  raise ValueError('source를 입력해 주세요.')
+        if not wt:   raise ValueError('weights 파일을 선택해 주세요.')
+        if not sd:   raise ValueError('savedirs를 입력해 주세요.')
+        if not proj: raise ValueError('project를 입력해 주세요.')
+        if not name: raise ValueError('name을 입력해 주세요.')
 
-        source = Path(source_text)
-        weights = Path(weights_text)
+        sp, wp = Path(src), Path(wt)
+        if not sp.exists():    raise ValueError(f'source가 존재하지 않습니다:\n{src}')
+        if not wp.is_file():   raise ValueError(f'weights 파일을 확인해 주세요:\n{wt}')
 
-        if not source.exists() or not (source.is_file() or source.is_dir()):
-            raise ValueError("source는 이미지 폴더 또는 txt 파일이어야 합니다.")
-        if not weights.is_file():
-            raise ValueError("weights pt 파일을 확인해 주세요.")
-        if not savedirs:
-            raise ValueError("savedirs를 입력해 주세요.")
-        if not project:
-            raise ValueError("project를 입력해 주세요.")
-        if not name:
-            raise ValueError("name을 입력해 주세요.")
+        try:    img_size = int(self.v_imgsize.get())
+        except: raise ValueError('img-size는 정수여야 합니다.')
+        try:    conf = float(self.v_conf.get())
+        except: raise ValueError('conf-thres는 0~1 사이 실수여야 합니다.')
+        try:    iou  = float(self.v_iou.get())
+        except: raise ValueError('iou-thres는 0~1 사이 실수여야 합니다.')
+        try:    recall = float(self.v_recall.get())
+        except: raise ValueError('min-recall은 0~1 사이 실수여야 합니다.')
 
         return argparse.Namespace(
-            weights=str(weights),
-            source=str(source),
-            img_size=int(self.img_size_var.get()),
-            conf_thres=float(self.conf_thres_var.get()),
-            iou_thres=float(self.iou_thres_var.get()),
-            min_recall=float(self.min_recall_var.get()),
-            device=self.device_values.get(self.device_var.get(), ""),
-            view_img=self.view_img_var.get(),
-            save_debug_images=self.save_debug_var.get(),
-            save_txt=False,
-            nosave=False,
+            weights=str(wp), source=str(sp),
+            img_size=img_size, conf_thres=conf, iou_thres=iou, min_recall=recall,
+            device=self.device_values.get(self.v_device.get(), ''),
+            view_img=self.v_viewimg.get(),
+            save_debug_images=self.v_debug.get(),
+            save_txt=False, nosave=False,
             classes=self._parse_classes(),
             augment=False,
-            project=project,
-            name=name,
-            exist_ok=self.exist_ok_var.get(),
-            no_trace=self.no_trace_var.get(),
+            project=proj, name=name,
+            exist_ok=self.v_existok.get(),
+            no_trace=self.v_notrace.get(),
             agnostic_nms=False,
-            savedirs=savedirs,
+            savedirs=sd,
         )
 
-    def _start_detection(self):
+    # ══════════════════════════════════════════════════════════════
+    #  실행 / 중지
+    # ══════════════════════════════════════════════════════════════
+
+    def _start(self):
         if self.worker and self.worker.is_alive():
-            messagebox.showinfo("실행 중", "이미 detection이 실행 중입니다.")
+            messagebox.showinfo('실행 중', 'Detection이 이미 실행 중입니다.')
             return
 
         try:
-            opt = self._build_options()
-        except Exception as exc:
-            messagebox.showerror("입력 오류", str(exc))
+            opt = self._build_opt()
+        except ValueError as exc:
+            messagebox.showerror('입력 오류', str(exc))
             return
 
-        self.log_text.delete("1.0", tk.END)
+        # UI 초기화
+        self._clear_log()
         self.stop_event.clear()
-        self.status_var.set("실행 중")
-        self.start_button.configure(state=tk.DISABLED)
-        self.stop_button.configure(state=tk.NORMAL)
-        self.worker = threading.Thread(target=self._run_detection, args=(opt,), daemon=True)
-        self.worker.start()
+        self._save_dir     = None
+        self._report_path  = None
+        self._start_time   = datetime.datetime.now()
 
-    def _stop_detection(self):
+        self.v_status.set('실행 중…')
+        self.v_elapsed.set('')
+        self.v_progress.set('')
+        self.v_eta.set('')
+        self._pb.set(0)
+        for card in (self._card_good, self._card_miss, self._card_fail, self._card_total):
+            card.update(0, 1)
+
+        self._btn_start.configure(state='disabled')
+        self._btn_stop.configure(state='normal')
+
+        callback = self._make_callback()
+        self.worker = threading.Thread(
+            target=self._worker, args=(opt, callback), daemon=True)
+        self.worker.start()
+        self._tick_elapsed()
+
+    def _stop(self):
         if self.worker and self.worker.is_alive():
             self.stop_event.set()
-            self.status_var.set("중지 요청됨")
-            self._append_log("\n중지 요청됨: 현재 처리 중인 이미지가 끝난 뒤 중지합니다.\n")
-            self.stop_button.configure(state=tk.DISABLED)
+            self.v_status.set('중지 요청됨…')
+            self._log_gui('\n⚠  중지 요청: 현재 이미지 완료 후 정지합니다.\n', 'warn')
+            self._btn_stop.configure(state='disabled')
 
-    def _run_detection(self, opt):
+    def _tick_elapsed(self):
+        """경과 시간을 1초마다 갱신합니다."""
+        if self.worker and self.worker.is_alive():
+            if self._start_time:
+                elapsed = (datetime.datetime.now() - self._start_time).total_seconds()
+                self.v_elapsed.set(f'⏱ {_fmt_time(elapsed)}')
+            self.after(1000, self._tick_elapsed)
+
+    def _make_callback(self):
+        def cb(current, total, category, stats, group_stats, elapsed, eta):
+            self.log_queue.put(('__PROGRESS__', {
+                'current': current, 'total': total,
+                'category': category,
+                'stats': stats, 'group_stats': group_stats,
+                'elapsed': elapsed, 'eta': eta,
+            }))
+        return cb
+
+    def _worker(self, opt, progress_callback):
         writer = QueueWriter(self.log_queue)
         try:
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
                 import torch
                 from detect_label_22 import detect
-
                 with torch.no_grad():
-                    save_dir = detect(opt, stop_event=self.stop_event)
-            self.log_queue.put(f"\n완료: {save_dir}\n")
+                    save_dir = detect(opt,
+                                       stop_event=self.stop_event,
+                                       progress_callback=progress_callback)
+            self.log_queue.put(('__DONE__', str(save_dir) if save_dir else ''))
         except Exception:
-            self.log_queue.put("\n실행 실패\n")
-            self.log_queue.put(traceback.format_exc())
+            self.log_queue.put(('__ERROR__', traceback.format_exc()))
         finally:
-            self.log_queue.put(("__STATUS__", "대기 중"))
+            self.log_queue.put(('__STATUS__', '대기 중'))
 
-    def _drain_log_queue(self):
+    # ══════════════════════════════════════════════════════════════
+    #  큐 드레인 (100ms 폴링)
+    # ══════════════════════════════════════════════════════════════
+
+    def _drain_queue(self):
         try:
             while True:
                 item = self.log_queue.get_nowait()
-                if isinstance(item, tuple) and item[0] == "__STATUS__":
-                    self.status_var.set(item[1])
-                    self.start_button.configure(state=tk.NORMAL)
-                    self.stop_button.configure(state=tk.DISABLED)
-                else:
-                    self._append_log(str(item))
+                if not isinstance(item, tuple):
+                    self._write(str(item), 'info')
+                    continue
+                kind, data = item
+
+                if kind == '__STATUS__':
+                    self.v_status.set(data)
+                    self._btn_start.configure(state='normal')
+                    self._btn_stop.configure(state='disabled')
+
+                elif kind == '__PROGRESS__':
+                    self._handle_progress(data)
+
+                elif kind == '__DONE__':
+                    self._save_dir = data
+                    if data:
+                        rp = Path(data) / 'report.html'
+                        if rp.exists():
+                            self._report_path = str(rp)
+                    self._log_gui(f'\n✅  완료: {data}\n', 'success')
+                    self._pb.set(1.0)
+                    self.v_progress.set('완료')
+                    self.v_eta.set('')
+
+                elif kind == '__ERROR__':
+                    self._log_gui(f'\n❌  실행 실패\n{data}\n', 'error')
+
+                elif kind == '__LOG__':
+                    tag = ('warn'  if 'WARNING' in data else
+                           'error' if 'ERROR'   in data else 'info')
+                    self._write(data.replace('\r', ''), tag)
+
         except queue.Empty:
             pass
-        self.after(100, self._drain_log_queue)
+        self.after(100, self._drain_queue)
 
-    def _append_log(self, text):
-        self.log_text.insert(tk.END, text)
-        self.log_text.see(tk.END)
+    def _handle_progress(self, d):
+        cur, tot = d['current'], d['total']
+        group   = d['group_stats']
+        elapsed = d['elapsed']
+        eta     = d['eta']
 
+        ratio = cur / tot if tot else 0
+        self._pb.set(ratio)
+        self.v_progress.set(f'{cur} / {tot}   ({ratio*100:.1f}%)')
+        self.v_eta.set(f'ETA  {_fmt_time(eta)}' if eta > 0 else '')
+
+        self._card_good.update(group.get('GOOD', 0), tot)
+        self._card_miss.update(group.get('MISS', 0), tot)
+        self._card_fail.update(group.get('FAIL', 0), tot)
+        self._card_total.update(cur, tot)
+
+    # ══════════════════════════════════════════════════════════════
+    #  로그 헬퍼
+    # ══════════════════════════════════════════════════════════════
+
+    def _log_gui(self, text, tag='info'):
+        """GUI 자체 메시지 (타임스탬프 포함)."""
+        ts = datetime.datetime.now().strftime('%H:%M:%S')
+        self._write(f'[{ts}] ', 'dim')
+        self._write(text, tag)
+
+    def _write(self, text, tag='info'):
+        self._log.configure(state='normal')
+        self._log.insert('end', text, tag)
+        self._log.see('end')
+        self._log.configure(state='disabled')
+
+    def _clear_log(self):
+        self._log.configure(state='normal')
+        self._log.delete('1.0', 'end')
+        self._log.configure(state='disabled')
+
+    # ══════════════════════════════════════════════════════════════
+    #  결과 폴더 / 리포트 열기
+    # ══════════════════════════════════════════════════════════════
+
+    def _open_folder(self):
+        path = self._save_dir
+        if not path:
+            messagebox.showinfo('알림', 'Detection을 먼저 실행해 주세요.')
+            return
+        p = Path(path)
+        if not p.exists():
+            messagebox.showwarning('알림', f'폴더가 존재하지 않습니다:\n{path}')
+            return
+        _open_path(str(p))
+
+    def _open_report(self):
+        path = self._report_path
+        if not path:
+            messagebox.showinfo('알림', 'Detection 완료 후 리포트가 생성됩니다.')
+            return
+        _open_path(path)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  유틸리티 함수
+# ══════════════════════════════════════════════════════════════════
+
+def _fmt_time(sec: float) -> str:
+    """초를 MM:SS 또는 HH:MM:SS 형태로 변환합니다."""
+    sec = max(0, int(sec))
+    m, s = divmod(sec, 60)
+    h, m = divmod(m, 60)
+    return f'{h:02d}:{m:02d}:{s:02d}' if h else f'{m:02d}:{s:02d}'
+
+
+def _open_path(path: str):
+    """OS에 맞게 파일/폴더를 기본 앱으로 엽니다."""
+    system = platform.system()
+    try:
+        if system == 'Windows':
+            os.startfile(path)
+        elif system == 'Darwin':
+            subprocess.Popen(['open', path])
+        else:
+            subprocess.Popen(['xdg-open', path])
+    except Exception as exc:
+        messagebox.showerror('열기 실패', str(exc))
+
+
+def _card_frame(parent, title, expand=False):
+    """제목이 있는 카드 프레임을 parent에 배치하고 inner를 반환합니다."""
+    outer = tk.Frame(parent, bg=C_BORDER, padx=1, pady=1)
+    if expand:
+        outer.pack(fill='both', expand=True)
+    else:
+        outer.pack(fill='x')
+    inner = tk.Frame(outer, bg=C_SURFACE)
+    inner.pack(fill='both', expand=True)
+    if title:
+        tk.Label(inner, text=title, bg=C_SURFACE, fg=C_TEXT_DIM,
+                 font=(FF, 8, 'bold'), padx=14, pady=8).pack(side='top', anchor='w')
+        tk.Frame(inner, bg=C_BORDER, height=1).pack(fill='x')
+    return inner
+
+
+# ══════════════════════════════════════════════════════════════════
+#  진입점
+# ══════════════════════════════════════════════════════════════════
 
 def main():
     app = DetectionGui()
     app.mainloop()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     sys.exit(main())
