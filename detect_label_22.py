@@ -50,6 +50,7 @@ RESULT_GROUPS = {
     'low_conf':    'FAIL',
 }
 IMAGE_EXTENSIONS = {'.bmp', '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.webp'}
+REPORT_SAMPLE_LIMIT = 3   # HTML 리포트에 보여줄 카테고리별 샘플 이미지 수
 
 # ── 디버그 패널 상수 ──────────────────────────────────────────────
 DEBUG_STEM_MAX_LENGTH  = 80
@@ -125,6 +126,29 @@ def imwrite_unicode(path, image):
         return False
     encoded.tofile(str(path))
     return True
+
+
+def _load_image_b64(path, max_width=1024):
+    """이미지를 로드해 max_width px로 축소 후 JPEG base64 문자열로 반환합니다.
+    HTML 리포트 인라인 샘플 이미지 생성에 사용됩니다."""
+    try:
+        import base64
+        data = np.fromfile(str(path), dtype=np.uint8)
+        img  = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        h, w = img.shape[:2]
+        if w > max_width:
+            scale     = max_width / w
+            new_w     = max_width
+            new_h     = max(1, int(h * scale))
+            img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 78])
+        if not ok:
+            return None
+        return base64.b64encode(buf.tobytes()).decode('utf-8')
+    except Exception:
+        return None
 
 
 def make_debug_image_path(debug_dir, image_path):
@@ -737,7 +761,7 @@ def write_category_list_files(result_dirs, category_items, logger):
 def generate_html_report(save_dir, stats, group_stats, total_images,
                           successful_images, processing_time, opt,
                           interrupted=False, category_items=None,
-                          sample_limit=5):
+                          sample_limit=5, sample_vis_paths=None):
     """검출 결과를 담은 HTML 리포트를 생성합니다."""
     save_dir = Path(save_dir)
 
@@ -760,6 +784,8 @@ def generate_html_report(save_dir, stats, group_stats, total_images,
         if interrupted else ''
     )
 
+    import html as _html  # HTML 이스케이프 (파일명 특수문자 대응)
+
     classes_str = ', '.join(str(c) for c in opt.classes) if opt.classes else '전체'
     category_labels = {
         'good_detect': '정상 검출',
@@ -775,9 +801,12 @@ def generate_html_report(save_dir, stats, group_stats, total_images,
     for cat in RESULT_CATEGORIES:
         items = category_items.get(cat, [])
         display_name = category_labels.get(cat, cat)
+        # [FIX] 파일명에 <, >, & 등 특수문자가 있어도 HTML이 깨지지 않도록 이스케이프
+        escaped_items = [_html.escape(name) for name in items[:20]]
+        items_html = '<br>'.join(escaped_items) if escaped_items else '-'
         category_rows += (
             f"<tr><td>{display_name}</td><td>{len(items)}개</td>"
-            f"<td>{'<br>'.join(items[:20]) if items else '-'}</td></tr>"
+            f"<td>{items_html}</td></tr>"
         )
 
     diff_preview_html = ""
@@ -788,8 +817,38 @@ def generate_html_report(save_dir, stats, group_stats, total_images,
         display_name = category_labels.get(cat, cat)
         diff_preview_html += f"<h3>{display_name} 샘플 ({min(len(items), sample_limit)} / {len(items)}개)</h3><ul>"
         for item in items[:sample_limit]:
-            diff_preview_html += f"<li>{item}</li>"
+            # [FIX] 파일명 HTML 이스케이프
+            diff_preview_html += f"<li>{_html.escape(item)}</li>"
         diff_preview_html += "</ul>"
+
+    # 샘플 이미지 HTML 생성 (base64 임베드)
+    _svp = sample_vis_paths or {}
+    sample_images_html = ""
+    for cat in diff_categories:
+        paths      = _svp.get(cat, [])
+        items_list = category_items.get(cat, [])
+        total_cnt  = len(items_list)
+        display_name = category_labels.get(cat, cat)
+
+        sample_images_html += f'<h3>{display_name} &nbsp;<span class="cnt">({len(paths)}/{total_cnt}개 표시)</span></h3>'
+        if paths:
+            sample_images_html += '<div class="img-sample">'
+            for p in paths:
+                b64 = _load_image_b64(p)
+                fn  = _html.escape(Path(p).name) if b64 else ''
+                if b64:
+                    sample_images_html += (
+                        f'<img src="data:image/jpeg;base64,{b64}" alt="{fn}" '
+                        f'title="{fn}">'
+                    )
+            sample_images_html += '</div>'
+        elif total_cnt:
+            sample_images_html += (
+                '<p class="no-sample">샘플 이미지 없음'
+                ' — <code>debug 이미지 저장</code> 옵션 활성화 시 자동으로 수집됩니다.</p>'
+            )
+        else:
+            sample_images_html += '<p class="no-sample">해당 카테고리 없음</p>'
 
     html = f"""<!DOCTYPE html>
 <html lang="ko">
@@ -833,6 +892,7 @@ table{{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:24px}}
 th,td{{padding:9px 12px;border:1px solid #21262d;text-align:left}}
 th{{background:#161b22;color:#8b949e;font-weight:600;font-size:11px}}
 tr:nth-child(odd){{background:#0d1117}}
+tr:nth-child(even){{background:#161b22}}
 h3{{font-size:14px;margin:14px 0 8px;color:#8ab4f8}}
 ul{{margin:0 0 14px 20px}}
 li{{margin-bottom:4px;font-size:13px}}
@@ -841,6 +901,11 @@ li{{margin-bottom:4px;font-size:13px}}
            border:1px solid #30363d}}
 .info-lbl{{font-size:11px;color:#8b949e;margin-bottom:4px}}
 .info-val{{font-size:14px;font-weight:600;word-break:break-all}}
+.img-sample{{margin-bottom:16px}}
+.img-sample img{{width:100%;border-radius:4px;border:1px solid #30363d;
+                 margin-bottom:8px;display:block}}
+.no-sample{{color:#8b949e;font-size:13px;font-style:italic;margin:4px 0 12px}}
+.cnt{{font-size:12px;color:#8b949e;font-weight:normal}}
 .footer{{text-align:center;font-size:11px;color:#8b949e;
          margin-top:32px;padding-top:16px;border-top:1px solid #21262d}}
 </style>
@@ -907,12 +972,13 @@ li{{margin-bottom:4px;font-size:13px}}
     </tbody>
   </table>
 
-  <h2>차이점 확인용 샘플</h2>
-  <div class="info-box">
-    <div class="info-lbl">운영 가이드</div>
-    <div class="info-val">전체 이미지를 모두 확인하지 않고, 미검출/오검출/저신뢰 검출에서 각 {sample_limit}장만 먼저 확인해 원인을 빠르게 파악하세요.</div>
+  <h2>차이점 샘플 이미지</h2>
+  <div class="info-box" style="margin-bottom:16px">
+    <div class="info-lbl">확인 가이드</div>
+    <div class="info-val">각 카테고리에서 최대 {sample_limit}장을 샘플로 보여줍니다.
+      왼쪽 패널: 모델 예측(PRED) &nbsp;|&nbsp; 오른쪽 패널: 실제 정답(GT)</div>
   </div>
-  {diff_preview_html}
+  {sample_images_html}
 
   <h2>처리 정보</h2>
   <div class="grid2">
@@ -1022,6 +1088,9 @@ def detect(opt, stop_event=None, progress_callback=None):
     stats         = {cat: 0 for cat in RESULT_CATEGORIES}
     category_items = {cat: [] for cat in RESULT_CATEGORIES}
     group_stats   = {gname: 0 for gname in sorted(set(RESULT_GROUPS.values()))}
+    # 리포트 샘플 이미지 수집 (카테고리별 최대 REPORT_SAMPLE_LIMIT장)
+    sample_vis_paths    = {cat: [] for cat in ['miss_detect', 'false_detect', 'low_conf']}
+    report_samples_dir  = save_dir / 'report_samples'
     total_bb      = 0
     debug_saved   = 0
     debug_failed  = 0
@@ -1104,10 +1173,16 @@ def detect(opt, stop_event=None, progress_callback=None):
                 gn = torch.tensor([w, h, w, h])
 
             # ── 평가 ──────────────────────────────────────────
+            # 샘플이 아직 부족하면 visualize 강제 활성화 (최초 처리 이미지 한정)
+            _still_need = (
+                total_images <= REPORT_SAMPLE_LIMIT * 30 and
+                any(len(sample_vis_paths[c]) < REPORT_SAMPLE_LIMIT
+                    for c in sample_vis_paths)
+            )
             result = evaluate_detections(
                 pred, gt_boxes, im0s, img, gn, names,
                 opt.conf_thres, opt.iou_thres, colors,
-                visualize=(opt.view_img or opt.save_debug_images),
+                visualize=(opt.view_img or opt.save_debug_images or _still_need),
                 min_recall=opt.min_recall,
                 classes=opt.classes,
             )
@@ -1119,6 +1194,21 @@ def detect(opt, stop_event=None, progress_callback=None):
             group_stats[group_name]+= 1
             category_items[category].append(str(Path(path).name))
             total_bb += int(result.get('bbox_count', len(result.get('pred_info', []))))
+
+            # 리포트용 샘플 이미지 저장 (MISS/FAIL 카테고리만, 슬롯이 남은 경우)
+            if (
+                category in sample_vis_paths
+                and len(sample_vis_paths[category]) < REPORT_SAMPLE_LIMIT
+                and result['visualization'] is not None
+            ):
+                try:
+                    report_samples_dir.mkdir(parents=True, exist_ok=True)
+                    sn  = len(sample_vis_paths[category])
+                    sp  = report_samples_dir / f"{category}_{sn}.jpg"
+                    if imwrite_unicode(sp, result['visualization']):
+                        sample_vis_paths[category].append(sp)
+                except Exception as _se:
+                    logger.warning(f"샘플 이미지 저장 실패: {_se}")
 
             # ── 결과 저장 ──────────────────────────────────────
             if not opt.nosave:
@@ -1199,7 +1289,8 @@ def detect(opt, stop_event=None, progress_callback=None):
         report_path = generate_html_report(
             save_dir, stats, group_stats, total_images,
             success_images, proc_time, opt, interrupted,
-            category_items=category_items, sample_limit=5,
+            category_items=category_items, sample_limit=REPORT_SAMPLE_LIMIT,
+            sample_vis_paths=sample_vis_paths,
         )
         logger.info(f"Report: {report_path}")
     except Exception as e:

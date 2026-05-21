@@ -254,30 +254,30 @@ class DetectionGui(tk.Tk):
 
         r = 0
         # source (txt / 폴더 2개 버튼)
-        _lbl(body, 'source', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE,
-             width=9, anchor='w').grid(row=r, column=0, sticky='w', pady=3)
+        _lbl(body, '소스 경로', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE,
+             width=11, anchor='w').grid(row=r, column=0, sticky='w', pady=3)
         _entry(body, self.v_source).grid(row=r, column=1, sticky='ew', padx=(8,6), pady=3)
         bf = tk.Frame(body, bg=C_SURFACE)
         bf.grid(row=r, column=2, sticky='ew', pady=3)
-        _btn(bf, 'txt', lambda: self._browse_file(
+        _btn(bf, 'TXT', lambda: self._browse_file(
              self.v_source, [('Text', '*.txt'), ('All', '*.*')])).pack(side='left')
         _btn(bf, '폴더', lambda: self._browse_dir(self.v_source)).pack(side='left', padx=(4,0))
         r += 1
 
         # weights
-        self._row_file(body, r, 'weights', self.v_weights,
+        self._row_file(body, r, '가중치 파일', self.v_weights,
                        [('PyTorch weights', '*.pt'), ('All', '*.*')]); r += 1
 
         # savedirs
-        self._row_dir(body, r, 'savedirs', self.v_savedirs); r += 1
+        self._row_dir(body, r, '저장 경로', self.v_savedirs); r += 1
 
         # project + name
         pn = tk.Frame(body, bg=C_SURFACE)
         pn.grid(row=r, column=0, columnspan=3, sticky='ew', pady=(4, 0))
-        _lbl(pn, 'project', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE,
-             width=9, anchor='w').pack(side='left')
+        _lbl(pn, '프로젝트', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE,
+             width=11, anchor='w').pack(side='left')
         _entry(pn, self.v_project).pack(side='left', fill='x', expand=True, padx=(8,8))
-        _lbl(pn, 'name', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE,
+        _lbl(pn, '이름', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE,
              width=5, anchor='w').pack(side='left')
         _entry(pn, self.v_name, width=16).pack(side='left', padx=(4, 0))
         r += 1
@@ -286,10 +286,10 @@ class DetectionGui(tk.Tk):
         num = tk.Frame(body, bg=C_SURFACE)
         num.grid(row=r, column=0, columnspan=3, sticky='ew', pady=(8, 0))
         for col, (lbl, var) in enumerate([
-            ('img-size',  self.v_imgsize),
-            ('conf-thres',self.v_conf),
-            ('iou-thres', self.v_iou),
-            ('min-recall',self.v_recall),
+            ('이미지 크기',  self.v_imgsize),
+            ('신뢰도',       self.v_conf),
+            ('IOU 임계값',   self.v_iou),
+            ('최소 재현율',  self.v_recall),
         ]):
             pad = (16 if col else 0, 0)
             _lbl(num, lbl, fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE).grid(
@@ -301,9 +301,9 @@ class DetectionGui(tk.Tk):
         # classes + device
         cd = tk.Frame(body, bg=C_SURFACE)
         cd.grid(row=r, column=0, columnspan=3, sticky='ew', pady=(8, 0))
-        _lbl(cd, 'classes', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE).pack(side='left')
+        _lbl(cd, '클래스', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE).pack(side='left')
         _entry(cd, self.v_classes, width=18).pack(side='left', padx=(4, 20))
-        _lbl(cd, 'device', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE).pack(side='left')
+        _lbl(cd, '장치', fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE).pack(side='left')
         self._device_combo = ttk.Combobox(cd, textvariable=self.v_device,
                                           state='readonly', width=30)
         self._device_combo.pack(side='left', padx=(4, 6))
@@ -314,10 +314,10 @@ class DetectionGui(tk.Tk):
         chk = tk.Frame(body, bg=C_SURFACE)
         chk.grid(row=r, column=0, columnspan=3, sticky='ew', pady=(8, 4))
         for text, var in [
-            ('debug 이미지 저장', self.v_debug),
-            ('결과 화면 표시',    self.v_viewimg),
-            ('exist ok',         self.v_existok),
-            ('no trace',         self.v_notrace),
+            ('디버그 이미지 저장',     self.v_debug),
+            ('결과 화면 표시',         self.v_viewimg),
+            ('결과 폴더 덮어쓰기',     self.v_existok),
+            ('TracedModel 비활성화',   self.v_notrace),
         ]:
             tk.Checkbutton(
                 chk, text=text, variable=var,
@@ -328,14 +328,14 @@ class DetectionGui(tk.Tk):
 
     def _row_file(self, parent, row, label, var, ftypes):
         _lbl(parent, label, fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE,
-             width=9, anchor='w').grid(row=row, column=0, sticky='w', pady=3)
+             width=11, anchor='w').grid(row=row, column=0, sticky='w', pady=3)
         _entry(parent, var).grid(row=row, column=1, sticky='ew', padx=(8,6), pady=3)
         _btn(parent, '찾기', lambda: self._browse_file(var, ftypes)).grid(
             row=row, column=2, sticky='ew', pady=3)
 
     def _row_dir(self, parent, row, label, var):
         _lbl(parent, label, fg=C_TEXT_DIM, font=FONT_SM, bg=C_SURFACE,
-             width=9, anchor='w').grid(row=row, column=0, sticky='w', pady=3)
+             width=11, anchor='w').grid(row=row, column=0, sticky='w', pady=3)
         _entry(parent, var).grid(row=row, column=1, sticky='ew', padx=(8,6), pady=3)
         _btn(parent, '찾기', lambda: self._browse_dir(var)).grid(
             row=row, column=2, sticky='ew', pady=3)
@@ -363,6 +363,8 @@ class DetectionGui(tk.Tk):
         right.pack(side='right')
         tk.Label(right, textvariable=self.v_elapsed,
                  bg=C_BG, fg=C_TEXT_DIM, font=FONT_SM).pack(side='right', padx=(6,0))
+        tk.Label(right, textvariable=self.v_eta,
+                 bg=C_BG, fg=C_WARNING, font=FONT_UI).pack(side='right', padx=(12,0))
         tk.Label(right, textvariable=self.v_status,
                  bg=C_BG, fg=C_TEXT, font=FONT_UI).pack(side='right')
 
@@ -377,8 +379,6 @@ class DetectionGui(tk.Tk):
         pb_txt.pack(fill='x')
         tk.Label(pb_txt, textvariable=self.v_progress,
                  bg=C_BG, fg=C_TEXT_DIM, font=FONT_SM).pack(side='left')
-        tk.Label(pb_txt, textvariable=self.v_eta,
-                 bg=C_BG, fg=C_TEXT_DIM, font=FONT_SM).pack(side='right')
 
     # ── 통계 카드 ────────────────────────────────────────────────
     def _build_stat_cards(self, parent):
@@ -386,9 +386,9 @@ class DetectionGui(tk.Tk):
         frame.pack(fill='x')
         frame.columnconfigure((0,1,2,3), weight=1)
 
-        self._card_good  = StatCard(frame, 'GOOD',  C_SUCCESS)
-        self._card_miss  = StatCard(frame, 'MISS',  C_WARNING)
-        self._card_fail  = StatCard(frame, 'FAIL',  C_DANGER)
+        self._card_good  = StatCard(frame, '정상',   C_SUCCESS)
+        self._card_miss  = StatCard(frame, '미검출', C_WARNING)
+        self._card_fail  = StatCard(frame, '오검출', C_DANGER)
         self._card_total = StatCard(frame, '처리 수', C_TEXT_DIM)
         for col, card in enumerate((self._card_good, self._card_miss,
                                      self._card_fail, self._card_total)):
@@ -403,6 +403,8 @@ class DetectionGui(tk.Tk):
         _btn(btn_row, '📊 리포트 열기', self._open_report,
              bg=C_BTN, fg=C_TEXT_DIM).pack(side='right', padx=(4,0))
         _btn(btn_row, '📂 결과 폴더', self._open_folder,
+             bg=C_BTN, fg=C_TEXT_DIM).pack(side='right', padx=(4,0))
+        _btn(btn_row, '📁 저장 경로', self._open_savedirs,
              bg=C_BTN, fg=C_TEXT_DIM).pack(side='right', padx=(4,0))
         _btn(btn_row, '🗑 지우기', self._clear_log,
              bg=C_BTN, fg=C_TEXT_DIM).pack(side='right')
@@ -525,13 +527,13 @@ class DetectionGui(tk.Tk):
         if not wp.is_file():   raise ValueError(f'weights 파일을 확인해 주세요:\n{wt}')
 
         try:    img_size = int(self.v_imgsize.get())
-        except: raise ValueError('img-size는 정수여야 합니다.')
+        except: raise ValueError('이미지 크기는 정수여야 합니다.')
         try:    conf = float(self.v_conf.get())
-        except: raise ValueError('conf-thres는 0~1 사이 실수여야 합니다.')
+        except: raise ValueError('신뢰도는 0~1 사이 실수여야 합니다.')
         try:    iou  = float(self.v_iou.get())
-        except: raise ValueError('iou-thres는 0~1 사이 실수여야 합니다.')
+        except: raise ValueError('IOU 임계값은 0~1 사이 실수여야 합니다.')
         try:    recall = float(self.v_recall.get())
-        except: raise ValueError('min-recall은 0~1 사이 실수여야 합니다.')
+        except: raise ValueError('최소 재현율은 0~1 사이 실수여야 합니다.')
 
         return argparse.Namespace(
             weights=str(wp), source=str(sp),
@@ -695,7 +697,7 @@ class DetectionGui(tk.Tk):
         ratio = cur / tot if tot else 0
         self._pb.set(ratio)
         self.v_progress.set(f'{cur} / {tot}   ({ratio*100:.1f}%)')
-        self.v_eta.set(f'ETA  {_fmt_time(eta)}' if eta > 0 else '')
+        self.v_eta.set(f'⏳ {_fmt_time(eta)}' if eta > 0 else '')
 
         self._card_good.update(group.get('GOOD', 0), tot)
         self._card_miss.update(group.get('MISS', 0), tot)
@@ -736,6 +738,26 @@ class DetectionGui(tk.Tk):
         if not p.exists():
             messagebox.showwarning('알림', f'폴더가 존재하지 않습니다:\n{path}')
             return
+        _open_path(str(p))
+
+    def _open_savedirs(self):
+        """저장 경로(GOOD/MISS/FAIL 분류 폴더)를 탐색기로 엽니다."""
+        path = self.v_savedirs.get().strip()
+        if not path:
+            messagebox.showinfo('알림', '저장 경로를 먼저 설정해 주세요.')
+            return
+        p = Path(path)
+        if not p.exists():
+            if messagebox.askyesno('폴더 없음',
+                                   f'저장 경로가 아직 존재하지 않습니다:\n{p}\n\n'
+                                   '폴더를 생성하고 열까요?'):
+                try:
+                    p.mkdir(parents=True, exist_ok=True)
+                except Exception as exc:
+                    messagebox.showerror('생성 실패', str(exc))
+                    return
+            else:
+                return
         _open_path(str(p))
 
     def _open_report(self):
