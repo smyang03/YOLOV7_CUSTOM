@@ -708,6 +708,26 @@ def save_results(result, path, target_dir, label_path=None):
             logger.error(f"Failed to copy label {label_path}: {e}")
 
     return target_img_path
+def write_category_list_files(result_dirs, category_items, logger):
+    """
+    그룹 폴더(GOOD/MISS/FAIL) 내부에 카테고리별 이미지 목록 txt를 저장합니다.
+    예) .../GOOD/good_detect_list.txt
+    """
+    for category in RESULT_CATEGORIES:
+        group_name = RESULT_GROUPS.get(category, 'FAIL')
+        group_dir = result_dirs.get(group_name)
+        if group_dir is None:
+            continue
+
+        list_path = Path(group_dir) / f"{category}_list.txt"
+        items = category_items.get(category, [])
+        try:
+            with open(list_path, 'w', encoding='utf-8') as f:
+                for name in items:
+                    f.write(f"{name}\n")
+            logger.info(f"Saved category list: {list_path} ({len(items)} items)")
+        except Exception as e:
+            logger.error(f"Failed to save category list {list_path}: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -716,7 +736,8 @@ def save_results(result, path, target_dir, label_path=None):
 
 def generate_html_report(save_dir, stats, group_stats, total_images,
                           successful_images, processing_time, opt,
-                          interrupted=False):
+                          interrupted=False, category_items=None,
+                          sample_limit=5):
     """검출 결과를 담은 HTML 리포트를 생성합니다."""
     save_dir = Path(save_dir)
 
@@ -740,6 +761,35 @@ def generate_html_report(save_dir, stats, group_stats, total_images,
     )
 
     classes_str = ', '.join(str(c) for c in opt.classes) if opt.classes else '전체'
+    category_labels = {
+        'good_detect': '정상 검출',
+        'background': '배경(검출 없음)',
+        'miss_detect': '미검출',
+        'false_detect': '오검출',
+        'low_conf': '저신뢰 검출',
+    }
+    category_items = category_items or {}
+    diff_categories = ['miss_detect', 'false_detect', 'low_conf']
+
+    category_rows = ""
+    for cat in RESULT_CATEGORIES:
+        items = category_items.get(cat, [])
+        display_name = category_labels.get(cat, cat)
+        category_rows += (
+            f"<tr><td>{display_name}</td><td>{len(items)}개</td>"
+            f"<td>{'<br>'.join(items[:20]) if items else '-'}</td></tr>"
+        )
+
+    diff_preview_html = ""
+    for cat in diff_categories:
+        items = category_items.get(cat, [])
+        if not items:
+            continue
+        display_name = category_labels.get(cat, cat)
+        diff_preview_html += f"<h3>{display_name} 샘플 ({min(len(items), sample_limit)} / {len(items)}개)</h3><ul>"
+        for item in items[:sample_limit]:
+            diff_preview_html += f"<li>{item}</li>"
+        diff_preview_html += "</ul>"
 
     html = f"""<!DOCTYPE html>
 <html lang="ko">
@@ -783,7 +833,9 @@ table{{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:24px}}
 th,td{{padding:9px 12px;border:1px solid #21262d;text-align:left}}
 th{{background:#161b22;color:#8b949e;font-weight:600;font-size:11px}}
 tr:nth-child(odd){{background:#0d1117}}
-tr:nth-child(even){{background:#161b22}}
+h3{{font-size:14px;margin:14px 0 8px;color:#8ab4f8}}
+ul{{margin:0 0 14px 20px}}
+li{{margin-bottom:4px;font-size:13px}}
 .grid2{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:24px}}
 .info-box{{padding:14px 16px;background:#161b22;border-radius:8px;
            border:1px solid #30363d}}
@@ -795,7 +847,7 @@ tr:nth-child(even){{background:#161b22}}
 </head>
 <body>
 <div class="wrap">
-  <h1>🔍 Detection Report</h1>
+  <h1>🔍 검출 리포트</h1>
   <div class="meta">생성: {now} &nbsp;|&nbsp; 저장 위치: {save_dir} &nbsp;|&nbsp; v{APP_VERSION}</div>
   {interrupted_banner}
 
@@ -807,13 +859,13 @@ tr:nth-child(even){{background:#161b22}}
       <div class="bar"><div class="bar-g" style="width:{pct(good)}%"></div></div>
     </div>
     <div class="card miss">
-      <div class="card-title">MISS (미감지)</div>
+      <div class="card-title">미검출</div>
       <div class="card-num">{miss}</div>
       <div class="card-pct">{pct(miss)}%</div>
       <div class="bar"><div class="bar-m" style="width:{pct(miss)}%"></div></div>
     </div>
     <div class="card fail">
-      <div class="card-title">FAIL (오감지)</div>
+      <div class="card-title">오검출</div>
       <div class="card-num">{fail}</div>
       <div class="card-pct">{pct(fail)}%</div>
       <div class="bar"><div class="bar-f" style="width:{pct(fail)}%"></div></div>
@@ -832,18 +884,35 @@ tr:nth-child(even){{background:#161b22}}
       <tr><th>카테고리</th><th>그룹</th><th>건수</th><th>비율</th></tr>
     </thead>
     <tbody>
-      <tr><td>good_detect</td><td style="color:#3fb950">GOOD</td>
+      <tr><td>good_detect</td><td style="color:#3fb950">정상</td>
           <td>{stats.get('good_detect',0)}</td><td>{pct(stats.get('good_detect',0))}%</td></tr>
-      <tr><td>background</td><td style="color:#3fb950">GOOD</td>
+      <tr><td>background</td><td style="color:#3fb950">정상</td>
           <td>{stats.get('background',0)}</td><td>{pct(stats.get('background',0))}%</td></tr>
-      <tr><td>miss_detect</td><td style="color:#d29922">MISS</td>
+      <tr><td>miss_detect</td><td style="color:#d29922">미검출</td>
           <td>{stats.get('miss_detect',0)}</td><td>{pct(stats.get('miss_detect',0))}%</td></tr>
-      <tr><td>false_detect</td><td style="color:#f85149">FAIL</td>
+      <tr><td>false_detect</td><td style="color:#f85149">오검출</td>
           <td>{stats.get('false_detect',0)}</td><td>{pct(stats.get('false_detect',0))}%</td></tr>
-      <tr><td>low_conf</td><td style="color:#f85149">FAIL</td>
+      <tr><td>low_conf</td><td style="color:#f85149">오검출</td>
           <td>{stats.get('low_conf',0)}</td><td>{pct(stats.get('low_conf',0))}%</td></tr>
     </tbody>
   </table>
+
+  <h2>카테고리별 데이터 목록</h2>
+  <table>
+    <thead>
+      <tr><th>카테고리</th><th>건수</th><th>이미지 목록(최대 20개)</th></tr>
+    </thead>
+    <tbody>
+      {category_rows}
+    </tbody>
+  </table>
+
+  <h2>차이점 확인용 샘플</h2>
+  <div class="info-box">
+    <div class="info-lbl">운영 가이드</div>
+    <div class="info-val">전체 이미지를 모두 확인하지 않고, 미검출/오검출/저신뢰 검출에서 각 {sample_limit}장만 먼저 확인해 원인을 빠르게 파악하세요.</div>
+  </div>
+  {diff_preview_html}
 
   <h2>처리 정보</h2>
   <div class="grid2">
@@ -868,7 +937,7 @@ tr:nth-child(even){{background:#161b22}}
     </div>
   </div>
 
-  <div class="footer">Detect Label 22 v{APP_VERSION} — YOLOv7 Evaluation Tool</div>
+  <div class="footer">Detect Label 22 v{APP_VERSION} — 객체검출 모델 평가 도구</div>
 </div>
 </body>
 </html>"""
@@ -951,6 +1020,7 @@ def detect(opt, stop_event=None, progress_callback=None):
 
     # ── 통계 초기화 ──────────────────────────────────────────────
     stats         = {cat: 0 for cat in RESULT_CATEGORIES}
+    category_items = {cat: [] for cat in RESULT_CATEGORIES}
     group_stats   = {gname: 0 for gname in sorted(set(RESULT_GROUPS.values()))}
     total_bb      = 0
     debug_saved   = 0
@@ -1047,6 +1117,7 @@ def detect(opt, stop_event=None, progress_callback=None):
             group_name = RESULT_GROUPS.get(category, 'FAIL')
             stats[category]        += 1
             group_stats[group_name]+= 1
+            category_items[category].append(str(Path(path).name))
             total_bb += int(result.get('bbox_count', len(result.get('pred_info', []))))
 
             # ── 결과 저장 ──────────────────────────────────────
@@ -1120,11 +1191,15 @@ def detect(opt, stop_event=None, progress_callback=None):
         for cat in RESULT_CATEGORIES:
             f.write(f"  {cat}: {stats[cat]}개  ({r(stats[cat]):.1%})\n")
 
+    # ── 그룹 폴더별 카테고리 리스트 txt 저장 ───────────────────────
+    write_category_list_files(result_dirs, category_items, logger)
+
     # ── HTML 리포트 ───────────────────────────────────────────────
     try:
         report_path = generate_html_report(
             save_dir, stats, group_stats, total_images,
             success_images, proc_time, opt, interrupted,
+            category_items=category_items, sample_limit=5,
         )
         logger.info(f"Report: {report_path}")
     except Exception as e:
