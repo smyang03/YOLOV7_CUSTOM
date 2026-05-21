@@ -102,7 +102,7 @@ def _entry(parent, textvariable, width=None, **kw):
 class StatCard(tk.Frame):
     """GOOD / MISS / FAIL / 합계 실시간 통계 카드."""
 
-    def __init__(self, parent, title, color, **kw):
+    def __init__(self, parent, title, color, compact=False, **kw):
         super().__init__(parent, bg=C_BORDER, **kw)
         inner = tk.Frame(self, bg=C_SURFACE)
         inner.pack(fill='both', expand=True, padx=1, pady=1)
@@ -110,12 +110,16 @@ class StatCard(tk.Frame):
         self._count_var = tk.StringVar(value='0')
         self._pct_var   = tk.StringVar(value='0.0%')
 
+        num_font = (FF, 16, 'bold') if compact else FONT_NUM
+        pad_v    = (5, 1) if compact else (10, 2)
+        pad_b    = (1, 5) if compact else (2, 10)
+
         tk.Label(inner, text=title, bg=C_SURFACE, fg=color,
-                 font=(FF, 8, 'bold')).pack(pady=(10, 2))
+                 font=(FF, 8, 'bold')).pack(pady=pad_v)
         tk.Label(inner, textvariable=self._count_var, bg=C_SURFACE, fg=C_TEXT,
-                 font=FONT_NUM).pack()
+                 font=num_font).pack()
         tk.Label(inner, textvariable=self._pct_var, bg=C_SURFACE, fg=C_TEXT_DIM,
-                 font=FONT_SM).pack(pady=(2, 10))
+                 font=FONT_SM).pack(pady=pad_b)
 
     def update(self, count, total):
         self._count_var.set(str(count))
@@ -137,6 +141,125 @@ class ProgressBar(tk.Canvas):
         ratio = max(0.0, min(1.0, ratio))
         w = self.winfo_width() or 1
         self.coords(self._rect, 0, 0, w * ratio, self.H)
+
+
+class ClassStatsTable(tk.Frame):
+    """클래스 × 어노테이션 레벨 실시간 통계 테이블.
+
+    class_stats 구조: {cls_id: {'gt': N, 'matched_gt': M, 'miss': K, 'false': F}}
+    """
+
+    _COLS = [
+        # (key,        헤더,       width_chars, anchor, normal_fg,  highlight_fn)
+        ('cls',      '클래스',    7,   'center', None,       None),
+        ('gt',       'GT 수',     6,   'e',      C_TEXT_DIM, None),
+        ('matched',  '매칭',      6,   'e',      C_SUCCESS,  None),
+        ('miss',     '미검출',    7,   'e',      None,       lambda v: C_WARNING if v > 0 else C_TEXT_DIM),
+        ('false',    '오검출',    7,   'e',      None,       lambda v: C_DANGER  if v > 0 else C_TEXT_DIM),
+        ('recall',   '재현율',    8,   'e',      None,       lambda v: (C_SUCCESS if v >= 80 else
+                                                                         C_WARNING if v >= 50 else C_DANGER)),
+    ]
+    _MAX_ROWS = 16   # 클래스 수 상한
+
+    def __init__(self, parent, **kw):
+        super().__init__(parent, bg=C_SURFACE, **kw)
+        self._row_data: dict  = {}   # cls_id  → row_idx
+        self._cells:    dict  = {}   # (row, col) → tk.Label
+        self._next_row: int   = 0
+        self._build()
+
+    # ── 헤더 ──────────────────────────────────────────────────
+    def _build(self):
+        hdr = tk.Frame(self, bg=C_SURFACE2)
+        hdr.pack(fill='x')
+        for col_i, (_, label, w, anc, _, _hfn) in enumerate(self._COLS):
+            sep = tk.Frame(hdr, bg=C_BORDER, width=1)
+            sep.pack(side='left', fill='y')
+            tk.Label(
+                hdr, text=label, bg=C_SURFACE2, fg=C_TEXT_DIM,
+                font=(FF, 8, 'bold'), width=w, anchor=anc, padx=4, pady=4,
+            ).pack(side='left')
+        tk.Frame(hdr, bg=C_BORDER, width=1).pack(side='left', fill='y')
+
+        self._body = tk.Frame(self, bg=C_SURFACE)
+        self._body.pack(fill='x')
+
+        # 빈 안내 레이블 (데이터 없을 때)
+        self._empty_lbl = tk.Label(
+            self._body, text='검출 시작 후 클래스별 통계가 여기에 표시됩니다.',
+            bg=C_SURFACE, fg=C_TEXT_DIM, font=FONT_SM, pady=8,
+        )
+        self._empty_lbl.pack()
+
+    # ── 행 생성 ───────────────────────────────────────────────
+    def _add_row(self, cls_id: int) -> int:
+        row_idx = self._next_row
+        bg = C_BG if row_idx % 2 == 0 else '#13181f'
+        row_frame = tk.Frame(self._body, bg=bg)
+        row_frame.pack(fill='x')
+
+        for col_i, (_, _, w, anc, _, _) in enumerate(self._COLS):
+            sep = tk.Frame(row_frame, bg=C_BORDER, width=1)
+            sep.pack(side='left', fill='y')
+            lbl = tk.Label(
+                row_frame, text='', bg=bg, fg=C_TEXT,
+                font=FONT_MONO, width=w, anchor=anc, padx=4, pady=2,
+            )
+            lbl.pack(side='left')
+            self._cells[(row_idx, col_i)] = lbl
+
+        tk.Frame(row_frame, bg=C_BORDER, width=1).pack(side='left', fill='y')
+        self._row_data[cls_id] = row_idx
+        self._next_row += 1
+        return row_idx
+
+    # ── 데이터 갱신 (메인 스레드에서 호출) ───────────────────
+    def update_stats(self, class_stats: dict):
+        if not class_stats:
+            return
+        if self._empty_lbl.winfo_ismapped():
+            self._empty_lbl.pack_forget()
+
+        for cls_id in sorted(class_stats.keys()):
+            if cls_id not in self._row_data:
+                if self._next_row >= self._MAX_ROWS:
+                    continue
+                self._add_row(cls_id)
+            row_idx = self._row_data[cls_id]
+            cs      = class_stats[cls_id]
+            gt      = cs['gt']
+            matched = cs['matched_gt']
+            miss    = cs['miss']
+            false_  = cs['false']
+            recall  = matched / gt * 100.0 if gt > 0 else 100.0
+
+            raw_vals = [cls_id, gt, matched, miss, false_, recall]
+            disp = [
+                f'cls {cls_id}',
+                str(gt),
+                str(matched),
+                str(miss)   if miss   > 0 else '-',
+                str(false_) if false_ > 0 else '-',
+                f'{recall:.1f}%',
+            ]
+
+            for col_i, (_, _, _, _, base_fg, hfn) in enumerate(self._COLS):
+                lbl = self._cells[(row_idx, col_i)]
+                lbl.configure(text=disp[col_i])
+                if hfn is not None:
+                    lbl.configure(fg=hfn(raw_vals[col_i]))
+                elif base_fg:
+                    lbl.configure(fg=base_fg)
+
+    def reset(self):
+        """새 검출 실행 시 테이블 초기화."""
+        for w in self._body.winfo_children():
+            if w is not self._empty_lbl:
+                w.destroy()
+        self._row_data.clear()
+        self._cells.clear()
+        self._next_row = 0
+        self._empty_lbl.pack()
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -380,20 +503,30 @@ class DetectionGui(tk.Tk):
         tk.Label(pb_txt, textvariable=self.v_progress,
                  bg=C_BG, fg=C_TEXT_DIM, font=FONT_SM).pack(side='left')
 
-    # ── 통계 카드 ────────────────────────────────────────────────
+    # ── 통계 카드 + 클래스 통계 테이블 ──────────────────────────
     def _build_stat_cards(self, parent):
+        # ── 소형 통계 카드 4개 (compact=True → 절반 높이) ──────
         frame = tk.Frame(parent, bg=C_BG)
         frame.pack(fill='x')
-        frame.columnconfigure((0,1,2,3), weight=1)
+        frame.columnconfigure((0, 1, 2, 3), weight=1)
 
-        self._card_good  = StatCard(frame, '정상',   C_SUCCESS)
-        self._card_miss  = StatCard(frame, '미검출', C_WARNING)
-        self._card_fail  = StatCard(frame, '오검출', C_DANGER)
-        self._card_total = StatCard(frame, '처리 수', C_TEXT_DIM)
+        self._card_good  = StatCard(frame, '정상',   C_SUCCESS,  compact=True)
+        self._card_miss  = StatCard(frame, '미검출', C_WARNING,  compact=True)
+        self._card_fail  = StatCard(frame, '오검출', C_DANGER,   compact=True)
+        self._card_total = StatCard(frame, '처리 수', C_TEXT_DIM, compact=True)
         for col, card in enumerate((self._card_good, self._card_miss,
                                      self._card_fail, self._card_total)):
             card.grid(row=0, column=col, sticky='nsew',
                       padx=(0 if col == 0 else 8, 0))
+
+        tk.Frame(parent, bg=C_BG, height=8).pack(fill='x')
+
+        # ── 클래스별 어노테이션 통계 테이블 ────────────────────
+        tbl_card = _card_frame(parent, '📊  클래스별 어노테이션 통계')
+        tbl_wrap = tk.Frame(tbl_card, bg=C_SURFACE, padx=14, pady=8)
+        tbl_wrap.pack(fill='x')
+        self._class_stats_table = ClassStatsTable(tbl_wrap)
+        self._class_stats_table.pack(fill='x')
 
     # ── 로그 패널 ────────────────────────────────────────────────
     def _build_log(self, card):
@@ -583,6 +716,7 @@ class DetectionGui(tk.Tk):
 
         self._btn_start.configure(state='disabled')
         self._btn_stop.configure(state='normal')
+        self._class_stats_table.reset()
 
         callback = self._make_callback()
         self.worker = threading.Thread(
@@ -619,12 +753,14 @@ class DetectionGui(tk.Tk):
             self.after(1000, self._tick_elapsed)
 
     def _make_callback(self):
-        def cb(current, total, category, stats, group_stats, elapsed, eta):
+        def cb(current, total, category, stats, group_stats, elapsed, eta,
+               class_stats=None):
             self.log_queue.put(('__PROGRESS__', {
                 'current': current, 'total': total,
                 'category': category,
                 'stats': stats, 'group_stats': group_stats,
                 'elapsed': elapsed, 'eta': eta,
+                'class_stats': class_stats or {},
             }))
         return cb
 
@@ -690,9 +826,10 @@ class DetectionGui(tk.Tk):
 
     def _handle_progress(self, d):
         cur, tot = d['current'], d['total']
-        group   = d['group_stats']
-        elapsed = d['elapsed']
-        eta     = d['eta']
+        group       = d['group_stats']
+        elapsed     = d['elapsed']
+        eta         = d['eta']
+        class_stats = d.get('class_stats', {})
 
         ratio = cur / tot if tot else 0
         self._pb.set(ratio)
@@ -703,6 +840,9 @@ class DetectionGui(tk.Tk):
         self._card_miss.update(group.get('MISS', 0), tot)
         self._card_fail.update(group.get('FAIL', 0), tot)
         self._card_total.update(cur, tot)
+
+        if class_stats:
+            self._class_stats_table.update_stats(class_stats)
 
     # ══════════════════════════════════════════════════════════════
     #  로그 헬퍼
