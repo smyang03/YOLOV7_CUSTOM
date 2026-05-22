@@ -452,9 +452,7 @@ def load_model(weights, device, img_size, trace=True):
     if trace and device.type != 'cpu':
         try:
             logger.info("Converting to TracedModel...")
-            rand_example = torch.zeros(1, 3, img_size, img_size).to(device)
-            rand_example = rand_example.half() if half else rand_example.float()
-            model = TracedModel(model, device, img_size, rand_example)
+            model = TracedModel(model, device, img_size)
             logger.info("TracedModel conversion succeeded")
         except Exception as e:
             logger.warning(f"TracedModel failed ({e}) — using standard model")
