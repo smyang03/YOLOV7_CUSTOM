@@ -330,81 +330,22 @@ if __name__ == '__main__':
     #check_requirements()
 
     if opt.task in ('train', 'val', 'test'):  # run normally
-        # yaml 로드해서 val이 리스트인지 확인
-        with open(opt.data) as f:
-            data_dict = yaml.load(f, Loader=yaml.SafeLoader)
-
-        task_key = opt.task if opt.task in ('train', 'val', 'test') else 'val'
-        val_data = data_dict.get(task_key, data_dict.get('val'))
-
-        if isinstance(val_data, list) and len(val_data) > 1:
-            # 다중 검증 세트 - 각각 테스트
-            print(f'\n다중 검증 세트 감지: {len(val_data)}개')
-            original_name = opt.name
-            all_results = []
-
-            for i, val_path in enumerate(val_data):
-                val_name = Path(val_path).stem
-                print(f'\n{"="*60}')
-                print(f'[{i+1}/{len(val_data)}] 검증 세트: {val_name}')
-                print(f'경로: {val_path}')
-                print(f'{"="*60}')
-
-                # 해당 val 경로만 담은 data dict 생성
-                data_single = data_dict.copy()
-                data_single[task_key] = val_path
-
-                # 결과 저장 폴더명에 val 이름 포함
-                opt.name = f'{original_name}_{val_name}'
-
-                results = test(data_single,
-                     opt.weights,
-                     opt.batch_size,
-                     opt.img_size,
-                     opt.conf_thres,
-                     opt.iou_thres,
-                     opt.save_json,
-                     opt.single_cls,
-                     opt.augment,
-                     opt.verbose,
-                     save_txt=opt.save_txt | opt.save_hybrid,
-                     save_hybrid=opt.save_hybrid,
-                     save_conf=opt.save_conf,
-                     trace=not opt.no_trace,
-                     v5_metric=opt.v5_metric
-                     )
-                all_results.append((val_name, results))
-
-            opt.name = original_name
-
-            # 전체 요약 출력
-            print(f'\n{"="*60}')
-            print('전체 검증 세트 요약')
-            print(f'{"="*60}')
-            print(('%25s' + '%12s' * 4) % ('Val Set', 'P', 'R', 'mAP@.5', 'mAP@.5:.95'))
-            pf = '%25s' + '%12.3g' * 4
-            for val_name, (res, maps, t, _) in all_results:
-                mp, mr, map50, map_ = res[:4]
-                print(pf % (val_name, mp, mr, map50, map_))
-
-        else:
-            # 단일 val - 기존 동작
-            test(opt.data,
-                 opt.weights,
-                 opt.batch_size,
-                 opt.img_size,
-                 opt.conf_thres,
-                 opt.iou_thres,
-                 opt.save_json,
-                 opt.single_cls,
-                 opt.augment,
-                 opt.verbose,
-                 save_txt=opt.save_txt | opt.save_hybrid,
-                 save_hybrid=opt.save_hybrid,
-                 save_conf=opt.save_conf,
-                 trace=not opt.no_trace,
-                 v5_metric=opt.v5_metric
-                 )
+        test(opt.data,
+             opt.weights,
+             opt.batch_size,
+             opt.img_size,
+             opt.conf_thres,
+             opt.iou_thres,
+             opt.save_json,
+             opt.single_cls,
+             opt.augment,
+             opt.verbose,
+             save_txt=opt.save_txt | opt.save_hybrid,
+             save_hybrid=opt.save_hybrid,
+             save_conf=opt.save_conf,
+             trace=not opt.no_trace,
+             v5_metric=opt.v5_metric
+             )
 
     elif opt.task == 'speed':  # speed benchmarks
         for w in opt.weights:
