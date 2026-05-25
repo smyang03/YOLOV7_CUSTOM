@@ -1,10 +1,14 @@
 """
-test_valid.py - 다중 검증 세트 테스트
-test.py의 test() 함수를 그대로 사용하되,
-data yaml의 val이 리스트이면 각 val별로 테스트 후 요약 출력
+test_valid.py - 다중 weight × 다중 val 세트 테스트
+test.py의 test() 함수를 재사용하여
+weight 여러 개 × val 여러 개 조합을 모두 테스트 후 요약 표 출력
 
 Usage:
+    # weight 1개, val 여러 개
     python test_valid.py --data data/custom.yaml --weights best.pt
+
+    # weight 여러 개, val 여러 개
+    python test_valid.py --data data/custom.yaml --weights model_A.pt model_B.pt model_C.pt
 
 data yaml 예시:
     val:
@@ -51,74 +55,83 @@ if __name__ == '__main__':
     with open(opt.data) as f:
         data_dict = yaml.load(f, Loader=yaml.SafeLoader)
 
-    task_key = opt.task if opt.task in ('train', 'val', 'test') else 'val'
-    val_data = data_dict.get(task_key, data_dict.get('val'))
+    task_key  = opt.task if opt.task in ('train', 'val', 'test') else 'val'
+    val_data  = data_dict.get(task_key, data_dict.get('val'))
+    val_list  = val_data if isinstance(val_data, list) else [val_data]
+    wt_list   = opt.weights if isinstance(opt.weights, list) else [opt.weights]
 
-    if isinstance(val_data, list) and len(val_data) > 1:
-        # ── 다중 검증 세트 ──────────────────────────────────────
-        print(f'\n다중 검증 세트 감지: {len(val_data)}개')
-        original_name = opt.name
-        all_results = []
+    original_name = opt.name
 
-        for i, val_path in enumerate(val_data):
+    # results_table[weight_name][val_name] = (mp, mr, map50, map_)
+    results_table = {}
+
+    for wi, weight in enumerate(wt_list):
+        w_name = Path(weight).stem
+        results_table[w_name] = {}
+
+        print(f'\n{"#"*60}')
+        print(f'[Weight {wi+1}/{len(wt_list)}] {weight}')
+        print(f'{"#"*60}')
+
+        for vi, val_path in enumerate(val_list):
             val_name = Path(val_path).stem
+
             print(f'\n{"="*60}')
-            print(f'[{i+1}/{len(val_data)}] 검증 세트: {val_name}')
-            print(f'경로: {val_path}')
+            print(f'  [Val {vi+1}/{len(val_list)}] {val_name}')
+            print(f'  경로: {val_path}')
             print(f'{"="*60}')
 
-            # 해당 val 경로만 담은 data dict 생성
+            # 해당 val 경로만 담은 data dict
             data_single = data_dict.copy()
             data_single[task_key] = val_path
 
-            # 결과 저장 폴더명에 val 이름 포함
-            opt.name = f'{original_name}_{val_name}'
+            # 결과 저장 폴더: exp_modelA_val_indoor
+            opt.name    = f'{original_name}_{w_name}_{val_name}'
+            opt.weights = [weight]
 
-            results = test(data_single,
-                           opt.weights,
-                           opt.batch_size,
-                           opt.img_size,
-                           opt.conf_thres,
-                           opt.iou_thres,
-                           opt.save_json,
-                           opt.single_cls,
-                           opt.augment,
-                           opt.verbose,
-                           save_txt=opt.save_txt | opt.save_hybrid,
-                           save_hybrid=opt.save_hybrid,
-                           save_conf=opt.save_conf,
-                           trace=not opt.no_trace,
-                           v5_metric=opt.v5_metric
-                           )
-            all_results.append((val_name, results))
-
-        opt.name = original_name
-
-        # 전체 요약 출력
-        print(f'\n{"="*60}')
-        print('전체 검증 세트 요약')
-        print(f'{"="*60}')
-        print(('%25s' + '%12s' * 4) % ('Val Set', 'P', 'R', 'mAP@.5', 'mAP@.5:.95'))
-        pf = '%25s' + '%12.3g' * 4
-        for val_name, (res, maps, t, _) in all_results:
+            res, maps, t, _ = test(data_single,
+                                   opt.weights,
+                                   opt.batch_size,
+                                   opt.img_size,
+                                   opt.conf_thres,
+                                   opt.iou_thres,
+                                   opt.save_json,
+                                   opt.single_cls,
+                                   opt.augment,
+                                   opt.verbose,
+                                   save_txt=opt.save_txt | opt.save_hybrid,
+                                   save_hybrid=opt.save_hybrid,
+                                   save_conf=opt.save_conf,
+                                   trace=not opt.no_trace,
+                                   v5_metric=opt.v5_metric
+                                   )
             mp, mr, map50, map_ = res[:4]
-            print(pf % (val_name, mp, mr, map50, map_))
+            results_table[w_name][val_name] = (mp, mr, map50, map_)
 
-    else:
-        # ── 단일 val - test.py와 동일하게 동작 ─────────────────
-        test(opt.data,
-             opt.weights,
-             opt.batch_size,
-             opt.img_size,
-             opt.conf_thres,
-             opt.iou_thres,
-             opt.save_json,
-             opt.single_cls,
-             opt.augment,
-             opt.verbose,
-             save_txt=opt.save_txt | opt.save_hybrid,
-             save_hybrid=opt.save_hybrid,
-             save_conf=opt.save_conf,
-             trace=not opt.no_trace,
-             v5_metric=opt.v5_metric
-             )
+    opt.name    = original_name
+    opt.weights = wt_list
+
+    # ── 전체 요약 표 출력 ───────────────────────────────────────
+    val_names = [Path(v).stem for v in val_list]
+    col_w     = 18  # 컬럼 너비
+
+    print(f'\n{"="*60}')
+    print('전체 요약 (mAP@.5 / mAP@.5:.95)')
+    print(f'{"="*60}')
+
+    # 헤더
+    header = f'{"Weight":<25}' + ''.join(f'{v:>{col_w}}' for v in val_names)
+    print(header)
+    print('-' * (25 + col_w * len(val_names)))
+
+    # 각 weight별 행
+    for w_name, val_results in results_table.items():
+        row = f'{w_name:<25}'
+        for val_name in val_names:
+            if val_name in val_results:
+                mp50, map_ = val_results[val_name][2], val_results[val_name][3]
+                cell = f'{mp50:.3f}/{map_:.3f}'
+            else:
+                cell = '-'
+            row += f'{cell:>{col_w}}'
+        print(row)
