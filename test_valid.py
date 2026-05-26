@@ -119,7 +119,7 @@ def _run_parallel(wt_list, val_list, data_dict, task_key, opt, num_gpus):
         p = Process(
             target=_gpu_worker,
             args=(gpu_id, work_queue, result_queue, val_list, data_dict, task_key, base_args),
-            daemon=True,
+            daemon=False,  # DataLoader가 내부적으로 자식 프로세스를 생성하므로 daemon=False 필수
         )
         processes.append(p)
         p.start()
