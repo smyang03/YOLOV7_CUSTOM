@@ -177,10 +177,13 @@ def build_report(data: dict) -> str:
 
 # ── 메인 ─────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(prog='report_valid.py')
-    parser.add_argument('--dir',   type=str, required=True, help='runs/test 같은 결과 폴더')
-    parser.add_argument('--file',  type=str, default=None,  help='특정 json 파일명 (생략 시 최신)')
-    parser.add_argument('--quiet', action='store_true',     help='터미널 출력 생략')
+    parser = argparse.ArgumentParser(
+        prog='report_valid.py',
+        usage='python report_valid.py <결과폴더> [--file JSON파일명] [--quiet]'
+    )
+    parser.add_argument('dir',     type=str,              help='결과 폴더 (예: runs/test)')
+    parser.add_argument('--file',  type=str, default=None, help='특정 json 파일명 (생략 시 최신)')
+    parser.add_argument('--quiet', action='store_true',    help='터미널 출력 생략')
     opt = parser.parse_args()
 
     dir_path = Path(opt.dir)
