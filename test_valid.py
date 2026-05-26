@@ -3,26 +3,20 @@ test_valid.py - 다중 weight × 다중 val 세트 테스트 (GPU 큐 병렬 실
 
 GPU가 여러 개면 각 GPU가 워커로 동작 → 끝나는 즉시 다음 weight 처리.
 GPU가 1개거나 CPU면 순차 실행으로 자동 전환.
+완료 후 {project}/valid_results_{timestamp}.json 자동 저장.
 
 Usage:
-    # weight 1개
-    python test_valid.py --data data/custom.yaml --weights best.pt
-
-    # weight 여러 개 → GPU 큐 방식 병렬 실행
     python test_valid.py --data data/custom.yaml \\
-        --weights w0.pt w1.pt w2.pt w3.pt w4.pt w5.pt w6.pt w7.pt w8.pt w9.pt
-
-data yaml 예시:
-    val:
-      - ./data/images/val_A/
-      - ./data/images/val_B/
+        --weights w0.pt w1.pt w2.pt --verbose --img-size 1280
 """
 
 import argparse
+import json
 import queue
 import yaml
 import torch
 import multiprocessing as mp
+from datetime import datetime
 from multiprocessing import Process, Queue
 from argparse import Namespace
 from pathlib import Path
@@ -30,13 +24,27 @@ from pathlib import Path
 from utils.general import check_file
 
 
+# ── 결과 직렬화 (numpy → python native) ────────────────────────────────────
+def _serialize(per_class):
+    """per_class_results(numpy 포함)를 JSON 저장 가능한 dict로 변환"""
+    if per_class is None:
+        return None
+    names = per_class['names']
+    rows  = []
+    for i, c in enumerate(per_class['ap_class']):
+        rows.append({
+            'class':  names[int(c)],
+            'labels': int(per_class['nt'][int(c)]),
+            'P':      round(float(per_class['p'][i]),  4),
+            'R':      round(float(per_class['r'][i]),  4),
+            'mAP50':  round(float(per_class['ap50'][i]), 4),
+            'mAP':    round(float(per_class['ap'][i]),  4),
+        })
+    return rows
+
+
 # ── GPU 워커 (자식 프로세스) ─────────────────────────────────────────────────
 def _gpu_worker(gpu_id, work_queue, result_queue, val_list, data_dict, task_key, base_args):
-    """
-    특정 GPU를 전담하는 워커.
-    work_queue 가 빌 때까지 weight를 하나씩 꺼내 모든 val 세트를 처리하고
-    결과를 result_queue 에 넣은 뒤 다음 weight를 가져온다.
-    """
     import test as test_module
     from test import test as test_fn
 
@@ -44,7 +52,6 @@ def _gpu_worker(gpu_id, work_queue, result_queue, val_list, data_dict, task_key,
     opt.device = str(gpu_id)
 
     while True:
-        # 큐에서 다음 작업 가져오기 (비었으면 종료)
         try:
             wi, weight = work_queue.get_nowait()
         except queue.Empty:
@@ -59,32 +66,32 @@ def _gpu_worker(gpu_id, work_queue, result_queue, val_list, data_dict, task_key,
             val_name = Path(val_path).stem
             print(f'  [GPU {gpu_id}] [{w_name}] → {val_name}', flush=True)
 
-            data_single = data_dict.copy()
+            data_single     = data_dict.copy()
             data_single[task_key] = val_path
-
             opt.weights     = [weight]
             opt.name        = f'{base_args["name"]}_{w_name}_{val_name}'
             test_module.opt = opt
 
             try:
-                res, _, _, _ = test_fn(
-                    data_single,
-                    [weight],
-                    opt.batch_size,
-                    opt.img_size,
-                    opt.conf_thres,
-                    opt.iou_thres,
-                    opt.save_json,
-                    opt.single_cls,
-                    opt.augment,
-                    opt.verbose,
+                res, _, _, per_class = test_fn(
+                    data_single, [weight],
+                    opt.batch_size, opt.img_size,
+                    opt.conf_thres, opt.iou_thres,
+                    opt.save_json, opt.single_cls,
+                    opt.augment, opt.verbose,
                     save_txt=opt.save_txt | opt.save_hybrid,
                     save_hybrid=opt.save_hybrid,
                     save_conf=opt.save_conf,
                     trace=not opt.no_trace,
                     v5_metric=opt.v5_metric,
                 )
-                weight_results[val_name] = res[:4]   # (mp, mr, map50, map)
+                weight_results[val_name] = {
+                    'P':        round(float(res[0]), 4),
+                    'R':        round(float(res[1]), 4),
+                    'mAP50':    round(float(res[2]), 4),
+                    'mAP':      round(float(res[3]), 4),
+                    'per_class': _serialize(per_class),
+                }
             except Exception as e:
                 print(f'  [ERROR] GPU {gpu_id} / {w_name} / {val_name}: {e}', flush=True)
                 weight_results[val_name] = None
@@ -95,22 +102,14 @@ def _gpu_worker(gpu_id, work_queue, result_queue, val_list, data_dict, task_key,
 
 # ── 병렬 실행 (큐 방식) ─────────────────────────────────────────────────────
 def _run_parallel(wt_list, val_list, data_dict, task_key, opt, num_gpus):
-    """
-    work_queue 에 모든 weight를 넣고,
-    num_gpus 개의 GPU 워커가 큐에서 꺼내가며 처리.
-    weight > GPU 개수여도 끝나는 GPU가 바로 다음 weight를 가져가므로
-    GPU가 놀지 않는다.
-    """
-    base_args  = vars(opt)
-
-    # 작업 큐: (인덱스, weight경로) 전부 넣기
+    base_args    = vars(opt)
     work_queue   = mp.Queue()
     result_queue = mp.Queue()
+
     for wi, weight in enumerate(wt_list):
         work_queue.put((wi, weight))
 
-    # GPU당 워커 1개 생성
-    actual_workers = min(num_gpus, len(wt_list))   # weight < GPU 개수면 낭비 방지
+    actual_workers = min(num_gpus, len(wt_list))
     print(f'\n병렬 모드: GPU 워커 {actual_workers}개 / Weight {len(wt_list)}개')
     print(f'  → GPU가 끝나는 즉시 다음 weight 자동 할당\n')
 
@@ -119,18 +118,16 @@ def _run_parallel(wt_list, val_list, data_dict, task_key, opt, num_gpus):
         p = Process(
             target=_gpu_worker,
             args=(gpu_id, work_queue, result_queue, val_list, data_dict, task_key, base_args),
-            daemon=False,  # DataLoader가 내부적으로 자식 프로세스를 생성하므로 daemon=False 필수
+            daemon=False,
         )
         processes.append(p)
         p.start()
 
-    # 모든 결과 수집 (weight 개수만큼)
     results_table = {}
     for _ in wt_list:
         w_name, weight_results = result_queue.get()
         results_table[w_name]  = weight_results
 
-    # 모든 워커 정상 종료 대기
     for p in processes:
         p.join()
 
@@ -139,7 +136,6 @@ def _run_parallel(wt_list, val_list, data_dict, task_key, opt, num_gpus):
 
 # ── 순차 실행 ────────────────────────────────────────────────────────────────
 def _run_sequential(wt_list, val_list, data_dict, task_key, opt):
-    """GPU 1개 또는 CPU 환경 → 순차 실행."""
     import test as test_module
     from test import test as test_fn
 
@@ -171,24 +167,25 @@ def _run_sequential(wt_list, val_list, data_dict, task_key, opt):
             test_module.opt = opt
 
             try:
-                res, _, _, _ = test_fn(
-                    data_single,
-                    [weight],
-                    opt.batch_size,
-                    opt.img_size,
-                    opt.conf_thres,
-                    opt.iou_thres,
-                    opt.save_json,
-                    opt.single_cls,
-                    opt.augment,
-                    opt.verbose,
+                res, _, _, per_class = test_fn(
+                    data_single, [weight],
+                    opt.batch_size, opt.img_size,
+                    opt.conf_thres, opt.iou_thres,
+                    opt.save_json, opt.single_cls,
+                    opt.augment, opt.verbose,
                     save_txt=opt.save_txt | opt.save_hybrid,
                     save_hybrid=opt.save_hybrid,
                     save_conf=opt.save_conf,
                     trace=not opt.no_trace,
                     v5_metric=opt.v5_metric,
                 )
-                results_table[w_name][val_name] = res[:4]
+                results_table[w_name][val_name] = {
+                    'P':        round(float(res[0]), 4),
+                    'R':        round(float(res[1]), 4),
+                    'mAP50':    round(float(res[2]), 4),
+                    'mAP':      round(float(res[3]), 4),
+                    'per_class': _serialize(per_class),
+                }
             except Exception as e:
                 print(f'  [ERROR] {w_name}/{val_name}: {e}')
                 results_table[w_name][val_name] = None
@@ -198,7 +195,33 @@ def _run_sequential(wt_list, val_list, data_dict, task_key, opt):
     return results_table
 
 
-# ── 요약 표 출력 ─────────────────────────────────────────────────────────────
+# ── JSON 저장 ────────────────────────────────────────────────────────────────
+def _save_json(results_table, wt_list, val_list, opt, data_yaml_path):
+    project_dir = Path(opt.project)
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    ts        = datetime.now().strftime('%Y%m%d_%H%M%S')
+    save_path = project_dir / f'valid_results_{ts}.json'
+
+    payload = {
+        'timestamp':   datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'data_yaml':   str(data_yaml_path),
+        'img_size':    opt.img_size,
+        'conf_thres':  opt.conf_thres,
+        'iou_thres':   opt.iou_thres,
+        'weights':     wt_list,
+        'val_sets':    [Path(v).stem for v in val_list],
+        'results':     results_table,
+    }
+
+    with open(save_path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    print(f'\n결과 저장 완료: {save_path}')
+    return save_path
+
+
+# ── 터미널 요약 표 ────────────────────────────────────────────────────────────
 def _print_summary(results_table, wt_list, val_list):
     val_names = [Path(v).stem for v in val_list]
     col_w     = 20
@@ -215,8 +238,8 @@ def _print_summary(results_table, wt_list, val_list):
         row         = f'{w_name:<25}'
         for val_name in val_names:
             entry = val_results.get(val_name)
-            if entry is not None:
-                cell = f'{entry[2]:.3f}/{entry[3]:.3f}'
+            if entry and entry.get('mAP50') is not None:
+                cell = f'{entry["mAP50"]:.3f}/{entry["mAP"]:.3f}'
             else:
                 cell = 'ERROR'
             row += f'{cell:>{col_w}}'
@@ -225,7 +248,7 @@ def _print_summary(results_table, wt_list, val_list):
 
 # ── 메인 ─────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
-    mp.set_start_method('spawn', force=True)   # CUDA + multiprocessing 안정성
+    mp.set_start_method('spawn', force=True)
 
     parser = argparse.ArgumentParser(prog='test_valid.py')
     parser.add_argument('--weights', nargs='+', type=str, default='yolov7.pt')
@@ -253,7 +276,6 @@ if __name__ == '__main__':
     opt.data = check_file(opt.data)
     print(opt)
 
-    # yaml 로드
     with open(opt.data) as f:
         data_dict = yaml.load(f, Loader=yaml.SafeLoader)
 
@@ -262,7 +284,6 @@ if __name__ == '__main__':
     val_list = val_raw if isinstance(val_raw, list) else [val_raw]
     wt_list  = opt.weights if isinstance(opt.weights, list) else [opt.weights]
 
-    # GPU 감지 및 모드 결정
     num_gpus = torch.cuda.device_count()
     print(f'\n감지된 GPU: {num_gpus}개 / Weight: {len(wt_list)}개 / Val 세트: {len(val_list)}개')
 
@@ -274,3 +295,4 @@ if __name__ == '__main__':
         results_table = _run_sequential(wt_list, val_list, data_dict, task_key, opt)
 
     _print_summary(results_table, wt_list, val_list)
+    _save_json(results_table, wt_list, val_list, opt, opt.data)
