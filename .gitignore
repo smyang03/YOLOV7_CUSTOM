@@ -85,3 +85,28 @@ data/labels/
 # Logs
 *.log
 wandb/
+
+# ONNX / TorchScript 바이너리
+*.onnx
+*.ptl
+
+# 압축 파일
+*.zip
+*.z[0-9][0-9]
+
+# 실행 파일
+*.exe
+
+# 배치 파일
+*.bat
+
+# 분석 이미지
+*.png
+
+# 결과 텍스트
+results.txt
+
+# 로컬 디렉토리
+npu/
+swim/
+test/
