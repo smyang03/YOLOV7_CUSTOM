@@ -800,7 +800,11 @@ if __name__ == '__main__':
     parser.add_argument('--best-val-set', type=str, default='first',
                         help='Validation set to use for best model selection (first, last, Combined, test1, test2, etc.)')
 
-    opt = parser.parse_args()
+    opt, unknown = parser.parse_known_args()
+    # torchrun/DDP가 --local-rank=N (하이픈) 형태로 전달하는 경우 수동 처리
+    for arg in unknown:
+        if arg.startswith('--local-rank='):
+            opt.local_rank = int(arg.split('=')[1])
 
     # Set DDP variables
     opt.world_size = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
