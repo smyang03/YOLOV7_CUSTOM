@@ -312,6 +312,11 @@ def train(hyp, opt, device, tb_writer=None):
                 check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
             model.half().float()  # pre-reduce anchor precision
 
+    # DDP 진입 전 barrier: rank 0의 autoanchor GA가 끝날 때까지 나머지 rank 대기
+    # 없으면 rank 0이 GA 도중 나머지 rank들이 DDP ALLGATHER에서 NCCL 타임아웃
+    if cuda and rank != -1:
+        dist.barrier()
+
     # DDP mode
     if cuda and rank != -1:
         model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank,
