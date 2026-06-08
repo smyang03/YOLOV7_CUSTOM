@@ -417,8 +417,10 @@ def train(hyp, opt, device, tb_writer=None):
                     if 'momentum' in x:
                         x['momentum'] = np.interp(ni, xi, [hyp['warmup_momentum'], hyp['momentum']])
 
-            # Multi-scale
-            if opt.multi_scale:
+            # Multi-scale (deploy_shape 파인튜닝 구간에서는 비활성화)
+            in_deploy_finetune = (deploy_shape is not None and opt.deploy_shape_finetune > 0 and
+                                  epoch >= epochs - opt.deploy_shape_finetune)
+            if opt.multi_scale and not in_deploy_finetune:
                 sz = random.randrange(imgsz * 0.5, imgsz * 1.5 + gs) // gs * gs  # size
                 sf = sz / max(imgs.shape[2:])  # scale factor
                 if sf != 1:
