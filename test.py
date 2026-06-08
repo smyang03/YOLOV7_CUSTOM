@@ -330,22 +330,61 @@ if __name__ == '__main__':
     #check_requirements()
 
     if opt.task in ('train', 'val', 'test'):  # run normally
-        test(opt.data,
-             opt.weights,
-             opt.batch_size,
-             opt.img_size,
-             opt.conf_thres,
-             opt.iou_thres,
-             opt.save_json,
-             opt.single_cls,
-             opt.augment,
-             opt.verbose,
-             save_txt=opt.save_txt | opt.save_hybrid,
-             save_hybrid=opt.save_hybrid,
-             save_conf=opt.save_conf,
-             trace=not opt.no_trace,
-             v5_metric=opt.v5_metric
-             )
+        with open(opt.data) as f:
+            data_dict = yaml.load(f, Loader=yaml.SafeLoader)
+
+        val_config = data_dict.get('val', [])
+
+        if isinstance(val_config, list):
+            for val_path in val_config:
+                val_name = Path(val_path).stem
+                print(f'\n{"="*60}')
+                print(f'Evaluating: {val_name}  ({val_path})')
+                print(f'{"="*60}')
+
+                tmp_data = dict(data_dict)
+                tmp_data['val'] = val_path
+
+                tmp_yaml = f'tmp_val_{val_name}.yaml'
+                with open(tmp_yaml, 'w') as f:
+                    yaml.dump(tmp_data, f)
+
+                test(tmp_yaml,
+                     opt.weights,
+                     opt.batch_size,
+                     opt.img_size,
+                     opt.conf_thres,
+                     opt.iou_thres,
+                     opt.save_json,
+                     opt.single_cls,
+                     opt.augment,
+                     opt.verbose,
+                     save_txt=opt.save_txt | opt.save_hybrid,
+                     save_hybrid=opt.save_hybrid,
+                     save_conf=opt.save_conf,
+                     trace=not opt.no_trace,
+                     v5_metric=opt.v5_metric
+                     )
+
+                os.remove(tmp_yaml)
+
+        else:
+            test(opt.data,
+                 opt.weights,
+                 opt.batch_size,
+                 opt.img_size,
+                 opt.conf_thres,
+                 opt.iou_thres,
+                 opt.save_json,
+                 opt.single_cls,
+                 opt.augment,
+                 opt.verbose,
+                 save_txt=opt.save_txt | opt.save_hybrid,
+                 save_hybrid=opt.save_hybrid,
+                 save_conf=opt.save_conf,
+                 trace=not opt.no_trace,
+                 v5_metric=opt.v5_metric
+                 )
 
     elif opt.task == 'speed':  # speed benchmarks
         for w in opt.weights:

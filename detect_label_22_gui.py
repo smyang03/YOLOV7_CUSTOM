@@ -378,7 +378,7 @@ class DetectionGui(tk.Tk):
         # ── 헤더 ─────────────────────────────────────────────────
         hdr = tk.Frame(self, bg=C_SURFACE, pady=14, padx=20)
         hdr.pack(fill='x')
-        tk.Label(hdr, text='🔍  Detect Label 22', bg=C_SURFACE,
+        tk.Label(hdr, text='🔍 평가 툴', bg=C_SURFACE,
                  fg=C_TEXT, font=FONT_TITL).pack(side='left')
         tk.Label(hdr, text=f'v{APP_VERSION}', bg=C_SURFACE,
                  fg=C_TEXT_DIM, font=FONT_SM).pack(side='left', padx=(8, 0), anchor='s', pady=(0,2))
