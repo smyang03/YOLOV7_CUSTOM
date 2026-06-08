@@ -267,19 +267,16 @@ def train(hyp, opt, device, tb_writer=None):
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)
         logger.info('Using SyncBatchNorm()')
 
+    # deploy_shape 파싱: --deploy-shape H W 형태
+    deploy_shape = tuple(opt.deploy_shape) if len(opt.deploy_shape) == 2 else None
+
     # Trainloader
-# train.py의 250번째 줄 근처 수정
-    if hasattr(create_dataloader, '__code__') and 'close_mosaic' in create_dataloader.__code__.co_varnames:
-        dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
-                                                hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect, rank=rank,
-                                                world_size=opt.world_size, workers=opt.workers,
-                                                image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '),
-                                                close_mosaic=opt.close_mosaic > 0)
-    else:
-        dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
-                                                hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect, rank=rank,
-                                                world_size=opt.world_size, workers=opt.workers,
-                                                image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '))
+    dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
+                                            hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect, rank=rank,
+                                            world_size=opt.world_size, workers=opt.workers,
+                                            image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '),
+                                            close_mosaic=opt.close_mosaic > 0,
+                                            deploy_shape=deploy_shape)
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
@@ -291,17 +288,11 @@ def train(hyp, opt, device, tb_writer=None):
         for val_cfg in val_configs:
             val_path = val_cfg['path']
             val_name = val_cfg['name']
-            if hasattr(create_dataloader, '__code__') and 'close_mosaic' in create_dataloader.__code__.co_varnames:
-                testloader = create_dataloader(val_path, imgsz_test, batch_size * 2, gs, opt,
-                                            hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
-                                            world_size=opt.world_size, workers=opt.workers,
-                                            pad=0.5, prefix=colorstr(f'{val_name}: '),
-                                            close_mosaic=False)[0]  # 검증에서는 항상 False
-            else:
-                testloader = create_dataloader(val_path, imgsz_test, batch_size * 2, gs, opt,
-                                            hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
-                                            world_size=opt.world_size, workers=opt.workers,
-                                            pad=0.5, prefix=colorstr(f'{val_name}: '))[0]
+            testloader = create_dataloader(val_path, imgsz_test, batch_size * 2, gs, opt,
+                                           hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
+                                           world_size=opt.world_size, workers=opt.workers,
+                                           pad=0.5, prefix=colorstr(f'{val_name}: '),
+                                           close_mosaic=False)[0]  # 검증은 rect=True, deploy_shape 불필요
             testloaders.append((val_name, testloader))
 
         if not opt.resume:
@@ -776,6 +767,8 @@ if __name__ == '__main__':
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone of yolov7=50, first3=0 1 2')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
     parser.add_argument('--close-mosaic', type=int, default=0, help='close mosaic augmentation (epochs)')  # close_mosaic 인자 추가
+    parser.add_argument('--deploy-shape', nargs='+', type=int, default=[],
+                        help='ONNX 배포 해상도 H W (예: --deploy-shape 384 640). 학습-추론 해상도 일치용.')
     parser.add_argument('--model-saveoptimizer', action='store_true', help='Save model optimizer state')
     parser.add_argument('--best-val-set', type=str, default='first',
                         help='Validation set to use for best model selection (first, last, Combined, test1, test2, etc.)')

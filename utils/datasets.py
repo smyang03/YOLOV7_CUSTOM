@@ -63,7 +63,8 @@ def exif_size(img):
 
     return s
 def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
-                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix='', close_mosaic=False):
+                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix='', close_mosaic=False,
+                      deploy_shape=None):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
         dataset = LoadImagesAndLabels(path, imgsz, batch_size,
@@ -76,7 +77,8 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                                       pad=pad,
                                       image_weights=image_weights,
                                       prefix=prefix,
-                                      close_mosaic=close_mosaic)  # close_mosaic 매개변수 추가
+                                      close_mosaic=close_mosaic,
+                                      deploy_shape=deploy_shape)  # ONNX 배포 해상도 (H, W)
 
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
@@ -527,17 +529,23 @@ def img2label_paths(img_paths):
 
 
 class LoadImagesAndLabels(Dataset):
-    def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, 
-                 image_weights=False, cache_images=False, single_cls=False, stride=32, pad=0.0, 
-                 prefix='', close_mosaic=False):  # 새 파라미터 추가
-        
+    def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False,
+                 image_weights=False, cache_images=False, single_cls=False, stride=32, pad=0.0,
+                 prefix='', close_mosaic=False, deploy_shape=None):  # deploy_shape: ONNX 배포 해상도 (H, W)
+
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
         self.image_weights = image_weights
         self.rect = False if image_weights else rect
         self.mosaic = self.augment and not self.rect  # 모자이크 활성화 조건
-        self.mosaic_border = [-img_size // 2, -img_size // 2]
+        # deploy_shape: ONNX 추론 해상도 (H, W). 학습-추론 해상도 불일치 해소용.
+        # 예) 640 학습 → ONNX 640×384 배포 시 deploy_shape=(384, 640)
+        if deploy_shape is not None:
+            self.deploy_shape = tuple(deploy_shape)  # (H, W)
+        else:
+            self.deploy_shape = (img_size, img_size)
+        self.mosaic_border = [-self.deploy_shape[0] // 2, -self.deploy_shape[1] // 2]
         self.stride = stride
         self.path = path
         self.close_mosaic = close_mosaic  # 새로 추가
@@ -668,7 +676,8 @@ class LoadImagesAndLabels(Dataset):
         n = min(self.n, 30)  # extrapolate from 30 random images
         for _ in range(n):
             im = cv2.imread(random.choice(self.img_files))  # sample image
-            ratio = self.img_size / max(im.shape[0], im.shape[1])  # max(h, w)  # ratio
+            sh, sw = self.deploy_shape
+            ratio = min(sh / im.shape[0], sw / im.shape[1])  # fit within deploy_shape
             b += im.nbytes * ratio ** 2
         mem_required = b * self.n / n  # GB required to cache dataset into RAM
         mem = psutil.virtual_memory()
@@ -832,7 +841,7 @@ class LoadImagesAndLabels(Dataset):
             img, (h0, w0), (h, w) = load_image(self, index)
 
             # Letterbox
-            shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
+            shape = self.batch_shapes[self.batch[index]] if self.rect else self.deploy_shape  # final letterboxed shape
             img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
@@ -944,7 +953,8 @@ def load_image(self, index):
         img = cv2.imread(path)  # BGR
         assert img is not None, 'Image Not Found ' + path
         h0, w0 = img.shape[:2]  # orig hw
-        r = self.img_size / max(h0, w0)  # resize image to img_size
+        sh, sw = self.deploy_shape  # target H, W
+        r = min(sh / h0, sw / w0)  # resize to fit within deploy_shape
         if r != 1:  # always resize down, only resize up if training with augmentation
             interp = cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR
             img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
@@ -1006,8 +1016,9 @@ def load_mosaic(self, index):
     # loads images in a 4-mosaic
 
     labels4, segments4 = [], []
-    s = self.img_size
-    yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y
+    sh, sw = self.deploy_shape  # target H, W (비정사각형 지원)
+    yc = int(random.uniform(-self.mosaic_border[0], 2 * sh + self.mosaic_border[0]))
+    xc = int(random.uniform(-self.mosaic_border[1], 2 * sw + self.mosaic_border[1]))
     indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
     for i, index in enumerate(indices):
         # Load image
@@ -1015,17 +1026,17 @@ def load_mosaic(self, index):
 
         # place img in img4
         if i == 0:  # top left
-            img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+            img4 = np.full((sh * 2, sw * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
             x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
             x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
         elif i == 1:  # top right
-            x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
+            x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, sw * 2), yc
             x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
         elif i == 2:  # bottom left
-            x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(s * 2, yc + h)
+            x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(sh * 2, yc + h)
             x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, w, min(y2a - y1a, h)
         elif i == 3:  # bottom right
-            x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(s * 2, yc + h)
+            x1a, y1a, x2a, y2a = xc, yc, min(xc + w, sw * 2), min(sh * 2, yc + h)
             x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
 
         img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
@@ -1043,7 +1054,8 @@ def load_mosaic(self, index):
     # Concat/clip labels
     labels4 = np.concatenate(labels4, 0)
     for x in (labels4[:, 1:], *segments4):
-        np.clip(x, 0, 2 * s, out=x)  # clip when using random_perspective()
+        np.clip(x[..., 0::2], 0, 2 * sw, out=x[..., 0::2])  # x coords → 2*sw
+        np.clip(x[..., 1::2], 0, 2 * sh, out=x[..., 1::2])  # y coords → 2*sh
     # img4, labels4 = replicate(img4, labels4)  # replicate
 
     # Augment
@@ -1065,33 +1077,33 @@ def load_mosaic9(self, index):
     # loads images in a 9-mosaic
 
     labels9, segments9 = [], []
-    s = self.img_size
+    sh, sw = self.deploy_shape  # target H, W (비정사각형 지원)
     indices = [index] + random.choices(self.indices, k=8)  # 8 additional image indices
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
 
-        # place img in img9
+        # place img in img9 — grid center at (sw, sh) using separate x/y offsets
         if i == 0:  # center
-            img9 = np.full((s * 3, s * 3, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+            img9 = np.full((sh * 3, sw * 3, img.shape[2]), 114, dtype=np.uint8)  # base image with 9 tiles
             h0, w0 = h, w
-            c = s, s, s + w, s + h  # xmin, ymin, xmax, ymax (base) coordinates
+            c = sw, sh, sw + w, sh + h  # xmin, ymin, xmax, ymax (base) coordinates
         elif i == 1:  # top
-            c = s, s - h, s + w, s
+            c = sw, sh - h, sw + w, sh
         elif i == 2:  # top right
-            c = s + wp, s - h, s + wp + w, s
+            c = sw + wp, sh - h, sw + wp + w, sh
         elif i == 3:  # right
-            c = s + w0, s, s + w0 + w, s + h
+            c = sw + w0, sh, sw + w0 + w, sh + h
         elif i == 4:  # bottom right
-            c = s + w0, s + hp, s + w0 + w, s + hp + h
+            c = sw + w0, sh + hp, sw + w0 + w, sh + hp + h
         elif i == 5:  # bottom
-            c = s + w0 - w, s + h0, s + w0, s + h0 + h
+            c = sw + w0 - w, sh + h0, sw + w0, sh + h0 + h
         elif i == 6:  # bottom left
-            c = s + w0 - wp - w, s + h0, s + w0 - wp, s + h0 + h
+            c = sw + w0 - wp - w, sh + h0, sw + w0 - wp, sh + h0 + h
         elif i == 7:  # left
-            c = s - w, s + h0 - h, s, s + h0
+            c = sw - w, sh + h0 - h, sw, sh + h0
         elif i == 8:  # top left
-            c = s - w, s + h0 - hp - h, s, s + h0 - hp
+            c = sw - w, sh + h0 - hp - h, sw, sh + h0 - hp
 
         padx, pady = c[:2]
         x1, y1, x2, y2 = [max(x, 0) for x in c]  # allocate coords
@@ -1108,9 +1120,10 @@ def load_mosaic9(self, index):
         img9[y1:y2, x1:x2] = img[y1 - pady:, x1 - padx:]  # img9[ymin:ymax, xmin:xmax]
         hp, wp = h, w  # height, width previous
 
-    # Offset
-    yc, xc = [int(random.uniform(0, s)) for _ in self.mosaic_border]  # mosaic center x, y
-    img9 = img9[yc:yc + 2 * s, xc:xc + 2 * s]
+    # Offset — crop (2*sh, 2*sw) region
+    yc = int(random.uniform(0, sh))
+    xc = int(random.uniform(0, sw))
+    img9 = img9[yc:yc + 2 * sh, xc:xc + 2 * sw]
 
     # Concat/clip labels
     labels9 = np.concatenate(labels9, 0)
@@ -1120,7 +1133,8 @@ def load_mosaic9(self, index):
     segments9 = [x - c for x in segments9]
 
     for x in (labels9[:, 1:], *segments9):
-        np.clip(x, 0, 2 * s, out=x)  # clip when using random_perspective()
+        np.clip(x[..., 0::2], 0, 2 * sw, out=x[..., 0::2])  # x coords → 2*sw
+        np.clip(x[..., 1::2], 0, 2 * sh, out=x[..., 1::2])  # y coords → 2*sh
     # img9, labels9 = replicate(img9, labels9)  # replicate
 
     # Augment
