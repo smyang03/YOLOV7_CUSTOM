@@ -269,6 +269,8 @@ def train(hyp, opt, device, tb_writer=None):
 
     # deploy_shape 파싱: --deploy-shape H W 형태
     deploy_shape = tuple(opt.deploy_shape) if len(opt.deploy_shape) == 2 else None
+    # finetune 모드이면 초반 학습은 정사각형(기본), 지정 에폭부터 자동 전환
+    init_deploy_shape = None if opt.deploy_shape_finetune > 0 else deploy_shape
 
     # Trainloader
     dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
@@ -276,7 +278,7 @@ def train(hyp, opt, device, tb_writer=None):
                                             world_size=opt.world_size, workers=opt.workers,
                                             image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '),
                                             close_mosaic=opt.close_mosaic > 0,
-                                            deploy_shape=deploy_shape)
+                                            deploy_shape=init_deploy_shape)
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
@@ -328,6 +330,12 @@ def train(hyp, opt, device, tb_writer=None):
     model.names = names
 
     # Start training
+    if deploy_shape is not None:
+        if opt.deploy_shape_finetune > 0:
+            logger.info(f"deploy_shape 파인튜닝 모드: epoch {epochs - opt.deploy_shape_finetune}부터 "
+                        f"{deploy_shape[0]}×{deploy_shape[1]} 해상도로 전환 (mosaic 유지)")
+        else:
+            logger.info(f"deploy_shape 전체 학습 모드: {deploy_shape[0]}×{deploy_shape[1]} 해상도로 처음부터 학습")
     t0 = time.time()
     nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations)
     # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
@@ -352,6 +360,14 @@ def train(hyp, opt, device, tb_writer=None):
             dataset.mosaic = False
             if hasattr(dataloader, 'dataset'):
                 dataloader.dataset.mosaic = False
+
+        # deploy_shape 파인튜닝 전환: 마지막 N 에폭에서 ONNX 배포 해상도로 전환 (mosaic 유지)
+        if (deploy_shape is not None and opt.deploy_shape_finetune > 0 and
+                epoch == epochs - opt.deploy_shape_finetune):
+            sh, sw = deploy_shape
+            dataset.deploy_shape = (sh, sw)
+            dataset.mosaic_border = [-sh // 2, -sw // 2]
+            logger.info(f"deploy_shape 전환: epoch {epoch}부터 {sh}×{sw} 해상도로 파인튜닝 (mosaic 유지)")
 
         # Update image weights (optional)
         if opt.image_weights:
@@ -769,6 +785,8 @@ if __name__ == '__main__':
     parser.add_argument('--close-mosaic', type=int, default=0, help='close mosaic augmentation (epochs)')  # close_mosaic 인자 추가
     parser.add_argument('--deploy-shape', nargs='+', type=int, default=[],
                         help='ONNX 배포 해상도 H W (예: --deploy-shape 384 640). 학습-추론 해상도 일치용.')
+    parser.add_argument('--deploy-shape-finetune', type=int, default=0,
+                        help='마지막 N 에폭부터 deploy-shape로 자동 전환 (mosaic 유지). 0=처음부터 적용')
     parser.add_argument('--model-saveoptimizer', action='store_true', help='Save model optimizer state')
     parser.add_argument('--best-val-set', type=str, default='first',
                         help='Validation set to use for best model selection (first, last, Combined, test1, test2, etc.)')
