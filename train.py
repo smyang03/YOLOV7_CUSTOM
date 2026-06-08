@@ -361,13 +361,20 @@ def train(hyp, opt, device, tb_writer=None):
             if hasattr(dataloader, 'dataset'):
                 dataloader.dataset.mosaic = False
 
-        # deploy_shape 파인튜닝 전환: 마지막 N 에폭에서 ONNX 배포 해상도로 전환 (mosaic 유지)
+        # deploy_shape 파인튜닝 전환: persistent worker에 변경사항이 전파되지 않으므로
+        # dataloader를 새로 생성하여 새 worker들이 deploy_shape를 반영하도록 함
         if (deploy_shape is not None and opt.deploy_shape_finetune > 0 and
                 epoch == epochs - opt.deploy_shape_finetune):
             sh, sw = deploy_shape
-            dataset.deploy_shape = (sh, sw)
-            dataset.mosaic_border = [-sh // 2, -sw // 2]
-            logger.info(f"deploy_shape 전환: epoch {epoch}부터 {sh}×{sw} 해상도로 파인튜닝 (mosaic 유지)")
+            logger.info(f"deploy_shape 전환: epoch {epoch}부터 {sh}×{sw} 해상도로 파인튜닝 (mosaic 유지) — dataloader 재생성")
+            dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
+                                                    hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect,
+                                                    rank=rank, world_size=opt.world_size, workers=opt.workers,
+                                                    image_weights=opt.image_weights, quad=opt.quad,
+                                                    prefix=colorstr('train: '),
+                                                    close_mosaic=opt.close_mosaic > 0,
+                                                    deploy_shape=deploy_shape)
+            nb = len(dataloader)  # 배치 수 갱신
 
         # Update image weights (optional)
         if opt.image_weights:
